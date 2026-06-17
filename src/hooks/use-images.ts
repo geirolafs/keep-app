@@ -469,7 +469,7 @@ function useImagesState() {
   const saveExample = useCallback(async (n: number) => {
     try {
       const db = await getDb();
-      const imgs = await db.select<(Image & { updated_at: number })[]>("SELECT * FROM images");
+      const imgs = await db.select<(Image & { updated_at: number })[]>("SELECT * FROM images WHERE deleted_at IS NULL");
       const tags = await db.select<{ id: string; name: string }[]>("SELECT * FROM tags");
       const imageTags = await db.select<{ image_id: string; tag_id: string }[]>("SELECT * FROM image_tags");
       const collections = await db.select<{ id: string; name: string }[]>("SELECT * FROM collections");
