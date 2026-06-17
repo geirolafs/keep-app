@@ -59,6 +59,7 @@ export function CmdKDialog({
           (img.title ?? "").toLowerCase().includes(q) ||
           (img.description ?? "").toLowerCase().includes(q) ||
           (img.source_url ?? "").toLowerCase().includes(q) ||
+          (img.ocr_text ?? "").toLowerCase().includes(q) ||
           tagNames.some((t) => t.includes(q))
         );
       })
