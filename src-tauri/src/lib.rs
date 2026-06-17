@@ -150,6 +150,21 @@ fn decode_heic(bytes: &[u8]) -> Result<image::DynamicImage, String> {
     }
 }
 
+// ── yt-dlp: extract direct video URL from a tweet ─────────────────────────────
+
+fn yt_dlp_get_url(tweet_url: &str) -> Option<String> {
+    let candidates = ["/opt/homebrew/bin/yt-dlp", "/usr/local/bin/yt-dlp", "yt-dlp"];
+    let bin = candidates.iter().find(|p| {
+        if p.starts_with('/') { std::path::Path::new(p).exists() } else { true }
+    })?;
+    let out = std::process::Command::new(bin)
+        .args(["--no-warnings", "-f", "mp4", "--get-url", tweet_url])
+        .output().ok()?;
+    std::str::from_utf8(&out.stdout).ok()?.trim().lines()
+        .find(|l| l.starts_with("http"))
+        .map(str::to_string)
+}
+
 // ── video frame extractor (macOS qlmanage — no external deps) ─────────────────
 
 fn extract_video_frame(path: &std::path::Path) -> Result<Vec<u8>, String> {
@@ -777,22 +792,25 @@ async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, Stri
             }
             Err(_) => (None, String::new(), None),
         };
-        // Fetch tweet page to get og:image (actual media) and og:video
-        let (tweet_og_image, tweet_og_video) = async {
+        // Try yt-dlp first for a direct MP4 URL (handles video tweets Twitter hides from og:video)
+        let yt_video_url = yt_dlp_get_url(&url);
+
+        // Fetch tweet page og:image (actual image for image tweets; profile pic for video/text tweets)
+        let tweet_og_image = async {
             let resp = client.get(&url).header("Accept-Language", "en-US,en;q=0.9").send().await.ok()?;
             let body = resp.text().await.ok()?;
             let og = parse_og_tags(&body);
-            let img = og.image.map(|u| resolve_url(&u, &url));
-            let vid = og.video.map(|u| resolve_url(&u, &url));
-            Some((img, vid))
-        }.await.unwrap_or((None, None));
-        let image_url = tweet_og_image.or(oembed_thumb);
+            og.image.map(|u| resolve_url(&u, &url))
+        }.await;
+        // Only use og:image if it's not a profile pic (profile pics contain /profile_images/)
+        let usable_og_image = tweet_og_image.filter(|u| !u.contains("/profile_images/"));
+        let image_url = usable_og_image.or(oembed_thumb);
         (
             author.as_deref().map(|a| format!("{} on X", a)),
             Some(caption),
             Some("X".to_string()),
             image_url,
-            tweet_og_video,
+            yt_video_url,
             author,
         )
     } else {
