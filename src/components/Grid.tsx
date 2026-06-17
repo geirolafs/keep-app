@@ -816,14 +816,21 @@ export default function Grid({
 						platform = meta.platform ?? "";
 						domain = meta.siteName ?? meta.url?.split("://")[1]?.split("/")[0] ?? "";
 					} catch {}
-					return domain ? (
+					// Fall back to source_url if post_meta missing
+					if (!domain && img.source_url) {
+						domain = img.source_url.split("://")[1]?.split("/")[0] ?? "";
+					}
+					if (!platform && img.source_url && /x\.com|twitter\.com/.test(img.source_url)) {
+						platform = "twitter";
+					}
+					return (
 						<div className="absolute bottom-0 left-0 right-0 flex items-end px-2 pb-2 pt-8 bg-gradient-to-t from-black/40 to-transparent">
 							<span className="rounded-full bg-white/80 px-1.5 py-0.5 text-[10px] text-black font-medium max-w-full truncate flex items-center gap-1">
 								{platform === "twitter" ? <RiTwitterLine className="size-3 shrink-0" /> : null}
-								{platform !== "twitter" ? domain : null}
+								{platform !== "twitter" && domain ? domain : null}
 							</span>
 						</div>
-					) : null;
+					);
 				})() : (
 				<div className="absolute bottom-0 left-0 right-0 hidden group-hover:flex flex-wrap gap-1 pt-16 px-2 pb-2 bg-gradient-to-t from-black/20 to-transparent">
 					{(imageTagsMap.get(img.id) ?? []).slice(0, 3).map((t) => (
