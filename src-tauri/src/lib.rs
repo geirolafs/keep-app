@@ -672,6 +672,165 @@ fn copy_image_to_clipboard(file_path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+fn parse_og_tags(html: &str) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
+    use scraper::{Html, Selector};
+    let doc = Html::parse_document(html);
+    let get_og = |prop: &str| -> Option<String> {
+        let sel = Selector::parse(&format!(r#"meta[property="{}"]"#, prop)).ok()?;
+        doc.select(&sel).next()?.value().attr("content").map(str::to_string)
+    };
+    let og_title = get_og("og:title").or_else(|| {
+        Selector::parse("title").ok().and_then(|sel| {
+            doc.select(&sel).next().map(|el| el.text().collect::<String>().trim().to_string())
+        })
+    });
+    let og_description = get_og("og:description").or_else(|| {
+        Selector::parse(r#"meta[name="description"]"#).ok().and_then(|sel| {
+            doc.select(&sel).next()?.value().attr("content").map(str::to_string)
+        })
+    });
+    (og_title, og_description, get_og("og:image"), get_og("og:site_name"))
+}
+
+fn strip_html_tags(html: &str) -> String {
+    use scraper::Html;
+    Html::parse_fragment(html).root_element().text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[derive(serde::Serialize)]
+struct SavedLink {
+    id: String,
+    file_path: String,
+    thumb_path: String,
+    width: u32,
+    height: u32,
+    dominant_color: Option<String>,
+    palette: Option<String>,
+    created_at: u64,
+    post_meta: String,
+}
+
+#[tauri::command]
+async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, String> {
+    let is_tweet = (url.contains("x.com/") || url.contains("twitter.com/")) && url.contains("/status/");
+
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let id = uuid::Uuid::now_v7().to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or(std::time::Duration::ZERO)
+        .as_millis() as u64;
+
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let images_dir = data_dir.join("images");
+    let thumbs_dir = data_dir.join("thumbs");
+    std::fs::create_dir_all(&images_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&thumbs_dir).map_err(|e| e.to_string())?;
+
+    // Derive domain for display
+    let domain = url.split("://").nth(1)
+        .and_then(|s| s.split('/').next())
+        .unwrap_or("").to_string();
+
+    // Fetch metadata
+    let (title, description, site_name, image_url, author_name) = if is_tweet {
+        let oembed_url = format!("https://publish.twitter.com/oembed?url={}&maxwidth=550&dnt=true", url);
+        match client.get(&oembed_url).send().await {
+            Ok(resp) => {
+                let oembed: serde_json::Value = resp.json().await.unwrap_or_default();
+                let author = oembed["author_name"].as_str().map(str::to_string);
+                let html_text = oembed["html"].as_str().unwrap_or("");
+                let caption = strip_html_tags(html_text);
+                let thumb = oembed["thumbnail_url"].as_str().map(str::to_string);
+                (
+                    author.as_deref().map(|a| format!("{} on X", a)),
+                    Some(caption),
+                    Some("X".to_string()),
+                    thumb,
+                    author,
+                )
+            }
+            Err(_) => (None, None, Some("X".to_string()), None, None),
+        }
+    } else {
+        match client.get(&url).send().await {
+            Ok(resp) => {
+                let body = resp.text().await.unwrap_or_default();
+                let (t, d, img, s) = parse_og_tags(&body);
+                (t, d, s, img, None)
+            }
+            Err(_) => (None, None, None, None, None),
+        }
+    };
+
+    // Try to download og:image / tweet thumbnail
+    let downloaded_image: Option<(image::DynamicImage, Vec<u8>, String)> = if let Some(ref img_url) = image_url {
+        let result: Option<(image::DynamicImage, Vec<u8>, String)> = async {
+            let resp = client.get(img_url).send().await.ok()?;
+            let resp = resp.error_for_status().ok()?;
+            let bytes = resp.bytes().await.ok()?;
+            let img = image::load_from_memory(&bytes).ok()?;
+            let ext = std::path::Path::new(img_url.split('?').next().unwrap_or(img_url))
+                .extension().and_then(|s| s.to_str()).filter(|s| !s.is_empty())
+                .unwrap_or("jpg").to_lowercase();
+            Some((img, bytes.to_vec(), ext))
+        }.await;
+        result
+    } else {
+        None
+    };
+
+    let (file_path_str, thumb_path_str, width, height, dominant_color, palette) = match downloaded_image {
+        Some((img, bytes, ext)) => {
+            let (w, h) = (img.width(), img.height());
+            let file_path = images_dir.join(format!("{}.{}", id, ext));
+            std::fs::write(&file_path, &bytes).map_err(|e| e.to_string())?;
+            let thumb_path = thumbs_dir.join(format!("{}.jpg", id));
+            save_thumb(&img, &thumb_path)?;
+            let rgb = img.to_rgb8();
+            let colors = get_palette(rgb.as_raw(), ColorFormat::Rgb, 10, 5).ok();
+            let (dom, pal) = if let Some(ref cols) = colors {
+                let hexes: Vec<String> = cols.iter().map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)).collect();
+                (hexes.first().cloned(), serde_json::to_string(&hexes).ok())
+            } else { (None, None) };
+            (file_path.to_string_lossy().to_string(), thumb_path.to_string_lossy().to_string(), w, h, dom, pal)
+        }
+        None => {
+            // No usable image — 1×1 placeholder so DB NOT NULL is satisfied
+            let ph = images_dir.join(format!("{}.png", id));
+            image::DynamicImage::new_rgb8(1, 1).save(&ph).ok();
+            let s = ph.to_string_lossy().to_string();
+            (s.clone(), s, 0, 0, None, None)
+        }
+    };
+
+    let post_meta = serde_json::json!({
+        "platform": if is_tweet { "twitter" } else { "web" },
+        "url": url,
+        "title": title,
+        "description": description,
+        "siteName": site_name.or_else(|| Some(domain)),
+        "imageUrl": image_url,
+        "authorName": author_name,
+    });
+
+    Ok(SavedLink {
+        id,
+        file_path: file_path_str,
+        thumb_path: thumb_path_str,
+        width,
+        height,
+        dominant_color,
+        palette,
+        created_at: now,
+        post_meta: serde_json::to_string(&post_meta).unwrap_or_default(),
+    })
+}
+
 #[tauri::command]
 fn trash_files(file_path: String, thumb_path: String) -> Result<(), String> {
     // trash the main file
@@ -765,6 +924,12 @@ pub fn run() {
         kind: MigrationKind::Up,
         sql: "ALTER TABLE images ADD COLUMN ocr_text TEXT;",
     },
+    Migration {
+        version: 7,
+        description: "add post_meta column",
+        kind: MigrationKind::Up,
+        sql: "ALTER TABLE images ADD COLUMN post_meta TEXT;",
+    },
     ];
 
     tauri::Builder::default()
@@ -790,6 +955,7 @@ pub fn run() {
             export_original,
             copy_image_to_clipboard,
             trash_files,
+            save_link,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

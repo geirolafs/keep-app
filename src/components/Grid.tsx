@@ -758,7 +758,7 @@ export default function Grid({
 					img.file_path.toLowerCase().endsWith(".svg")
 						? { backgroundColor: "#fff", transition: "transform 150ms ease" }
 						: {
-								backgroundColor: img.dominant_color ?? undefined,
+								backgroundColor: img.dominant_color ?? (img.kind === "link" ? "#1a1a1a" : undefined),
 								transition: "transform 150ms ease",
 							}
 				}
@@ -807,6 +807,20 @@ export default function Grid({
 						draggable={false}
 					/>
 				)}
+				{img.kind === "link" ? (() => {
+					let domain = "";
+					try {
+						const meta = JSON.parse(img.post_meta ?? "{}") as { siteName?: string; url?: string };
+						domain = meta.siteName ?? meta.url?.split("://")[1]?.split("/")[0] ?? "";
+					} catch {}
+					return domain ? (
+						<div className="absolute bottom-0 left-0 right-0 flex items-end px-2 pb-2 pt-8 bg-gradient-to-t from-black/40 to-transparent">
+							<span className="rounded-full bg-white/80 px-1.5 py-0.5 text-[10px] text-black font-medium max-w-full truncate">
+								{domain}
+							</span>
+						</div>
+					) : null;
+				})() : (
 				<div className="absolute bottom-0 left-0 right-0 hidden group-hover:flex flex-wrap gap-1 pt-16 px-2 pb-2 bg-gradient-to-t from-black/20 to-transparent">
 					{(imageTagsMap.get(img.id) ?? []).slice(0, 3).map((t) => (
 						<span
@@ -817,6 +831,7 @@ export default function Grid({
 						</span>
 					))}
 				</div>
+				)}
 				{selectedIds.size > 0 && (
 					<div
 						className={cn(

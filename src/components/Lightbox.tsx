@@ -19,6 +19,7 @@ import { useTags } from "@/hooks/use-tags";
 import { useCollections } from "@/hooks/useCollections";
 import { useSettings } from "@/hooks/use-settings";
 import { toastManager } from "@/lib/toast";
+import { PostCard } from "@/components/PostCard";
 import type { Image } from "@/hooks/use-images";
 
 export interface LightboxProps {
@@ -210,6 +211,7 @@ export function Lightbox({
 
   const isSvg = image.file_path.toLowerCase().endsWith(".svg");
   const isVideo = image.kind === "video";
+  const isLink = image.kind === "link";
   const imageTags = imageTagsMap.get(image.id) ?? [];
   const imageCollections = imageCollectionsMap.get(image.id) ?? [];
   const unassignedCollections = collections.filter(
@@ -319,7 +321,7 @@ export function Lightbox({
       className="fixed inset-0 z-50 flex"
       style={{ background: isSvg
         ? "repeating-conic-gradient(#d0d0d0 0% 25%, #f8f8f8 0% 50%) 0 0 / 24px 24px"
-        : buildMeshBackground(palette) }}
+        : (isLink && palette.length === 0 ? "#111" : buildMeshBackground(palette)) }}
 
     >
       {/* Image area */}
@@ -333,6 +335,19 @@ export function Lightbox({
             className="max-h-[90vh] max-w-full p-8"
             draggable={false}
           />
+        ) : isLink && image.width === 0 ? (
+          // Link with no usable image — show domain pill
+          <div className="flex flex-col items-center gap-3 text-white/40 select-none">
+            <RiExternalLinkLine className="size-12 opacity-30" />
+            <span className="text-sm">
+              {(() => {
+                try {
+                  const m = JSON.parse(image.post_meta ?? "{}") as { siteName?: string; url?: string };
+                  return m.siteName ?? m.url?.split("://")[1]?.split("/")[0] ?? "Link";
+                } catch { return "Link"; }
+              })()}
+            </span>
+          </div>
         ) : (
           <>
             <img
@@ -419,11 +434,14 @@ export function Lightbox({
           )}
         </div>
 
+        {/* Link card metadata */}
+        {isLink && <PostCard image={image} />}
+
         {/* Description */}
         <div className="border-b border-border/50 px-5 py-3">
           <div className="mb-1.5 flex items-center justify-between">
             <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Description</span>
-            {!isSvg && <button
+            {!isSvg && !isLink && <button
               type="button"
               onClick={handleAnalyze}
               disabled={analyzing}
@@ -462,7 +480,7 @@ export function Lightbox({
         </div>
 
         {/* Generation Prompt */}
-        {!isVideo && (
+        {!isVideo && !isLink && (
           <div className="border-b border-border/50 px-5 py-3">
             <div className="mb-1.5 flex items-center justify-between">
               <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Generation Prompt</span>

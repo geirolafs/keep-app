@@ -21,6 +21,7 @@ export interface Image {
   created_at: number;
   kind: string;
   deleted_at: number | null;
+  post_meta: string | null;
 }
 
 interface SavedImageResult {
@@ -35,6 +36,18 @@ interface SavedImageResult {
   kind: string;
   vision_tags: string[];
   ocr_text: string;
+}
+
+interface SavedLinkResult {
+  id: string;
+  file_path: string;
+  thumb_path: string;
+  width: number;
+  height: number;
+  dominant_color: string | null;
+  palette: string | null;
+  created_at: number;
+  post_meta: string;
 }
 
 async function insertVisionData(db: Awaited<ReturnType<typeof getDb>>, imageId: string, visionTags: string[], ocrText: string) {
@@ -231,7 +244,7 @@ function useImagesState() {
       await insertVisionData(db, saved.id, saved.vision_tags, saved.ocr_text);
 
       setImages((prev) => [
-        { ...saved, source_url: null, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null },
+        { ...saved, source_url: null, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null, post_meta: null },
         ...prev,
       ]);
       toastManager.add({ title: "Image saved", type: "success", timeout: 2500 });
@@ -258,7 +271,7 @@ function useImagesState() {
       await insertVisionData(db, saved.id, saved.vision_tags, saved.ocr_text);
 
       setImages((prev) => [
-        { ...saved, source_url: null, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null },
+        { ...saved, source_url: null, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null, post_meta: null },
         ...prev,
       ]);
       toastManager.add({ title: saved.kind === "video" ? "Video saved" : "Image saved", type: "success", timeout: 2500 });
@@ -285,13 +298,35 @@ function useImagesState() {
       await insertVisionData(db, saved.id, saved.vision_tags, saved.ocr_text);
 
       setImages((prev) => [
-        { ...saved, source_url: url, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null },
+        { ...saved, source_url: url, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null, post_meta: null },
         ...prev,
       ]);
       toastManager.add({ title: "Image saved", type: "success", timeout: 2500 });
     } catch (err) {
       console.error("[keep] saveUrl failed:", err);
       toastManager.add({ title: "Failed to save image", type: "error" });
+    }
+  }, []);
+
+  const saveLink = useCallback(async (url: string) => {
+    try {
+      const saved = await invoke<SavedLinkResult>("save_link", { url });
+      const db = await getDb();
+      await db.execute(
+        `INSERT INTO images (id, file_path, thumb_path, source_url, width, height, dominant_color, palette, created_at, updated_at, kind, post_meta)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, 'link', $10)`,
+        [saved.id, saved.file_path, saved.thumb_path, url, saved.width, saved.height, saved.dominant_color, saved.palette, saved.created_at, saved.post_meta]
+      );
+      let title: string | null = null;
+      try { title = JSON.parse(saved.post_meta)?.title ?? null; } catch {}
+      setImages((prev) => [
+        { ...saved, source_url: url, title, notes: null, description: null, ocr_text: null, deleted_at: null, kind: "link", post_meta: saved.post_meta },
+        ...prev,
+      ]);
+      toastManager.add({ title: "Link saved", type: "success", timeout: 2500 });
+    } catch (err) {
+      console.error("[keep] saveLink failed:", err);
+      toastManager.add({ title: "Failed to save link", type: "error" });
     }
   }, []);
 
@@ -540,7 +575,9 @@ function useImagesState() {
           item.getAsString((text) => {
             const trimmed = text.trim();
             if (trimmed.startsWith("http")) {
-              saveUrl(trimmed);
+              const isImageUrl = /\.(jpe?g|png|gif|webp|avif|svg|bmp|tiff?|jxl|heic|heif)(\?.*)?$/i.test(trimmed);
+              if (isImageUrl) saveUrl(trimmed);
+              else saveLink(trimmed);
             }
           });
           return;
@@ -549,7 +586,7 @@ function useImagesState() {
     };
     window.addEventListener("paste", handler);
     return () => window.removeEventListener("paste", handler);
-  }, [saveBlob, saveUrl]);
+  }, [saveBlob, saveUrl, saveLink]);
 
   useEffect(() => {
     load();
@@ -561,6 +598,7 @@ function useImagesState() {
     saveBlob,
     savePath,
     saveUrl,
+    saveLink,
     softDelete,
     restoreImage,
     permanentDelete,
