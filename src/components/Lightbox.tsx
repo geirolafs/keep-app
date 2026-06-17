@@ -212,6 +212,7 @@ export function Lightbox({
   const isSvg = image.file_path.toLowerCase().endsWith(".svg");
   const isVideo = image.kind === "video";
   const isLink = image.kind === "link";
+  const isLinkVideo = isLink && /\.(mp4|mov|webm)$/i.test(image.file_path);
   const imageTags = imageTagsMap.get(image.id) ?? [];
   const imageCollections = imageCollectionsMap.get(image.id) ?? [];
   const unassignedCollections = collections.filter(
@@ -326,7 +327,7 @@ export function Lightbox({
     >
       {/* Image area */}
       <div className="relative flex flex-1 items-center justify-center overflow-hidden">
-        {isVideo ? (
+        {isVideo || isLinkVideo ? (
           <video
             aria-label="Video player"
             src={imgSrc(image.file_path)}

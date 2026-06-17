@@ -685,24 +685,37 @@ fn resolve_url(img_url: &str, base_url: &str) -> String {
     }
 }
 
-fn parse_og_tags(html: &str) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
+struct OgMeta {
+    title: Option<String>,
+    description: Option<String>,
+    image: Option<String>,
+    video: Option<String>,
+    site_name: Option<String>,
+}
+
+fn parse_og_tags(html: &str) -> OgMeta {
     use scraper::{Html, Selector};
     let doc = Html::parse_document(html);
     let get_og = |prop: &str| -> Option<String> {
         let sel = Selector::parse(&format!(r#"meta[property="{}"]"#, prop)).ok()?;
         doc.select(&sel).next()?.value().attr("content").map(str::to_string)
     };
-    let og_title = get_og("og:title").or_else(|| {
+    let title = get_og("og:title").or_else(|| {
         Selector::parse("title").ok().and_then(|sel| {
             doc.select(&sel).next().map(|el| el.text().collect::<String>().trim().to_string())
         })
     });
-    let og_description = get_og("og:description").or_else(|| {
+    let description = get_og("og:description").or_else(|| {
         Selector::parse(r#"meta[name="description"]"#).ok().and_then(|sel| {
             doc.select(&sel).next()?.value().attr("content").map(str::to_string)
         })
     });
-    (og_title, og_description, get_og("og:image"), get_og("og:site_name"))
+    // Prefer secure_url > url for video
+    let video = get_og("og:video:secure_url")
+        .or_else(|| get_og("og:video:url"))
+        .or_else(|| get_og("og:video"))
+        .filter(|v| v.ends_with(".mp4") || v.contains("video.twimg.com"));
+    OgMeta { title, description, image: get_og("og:image"), video, site_name: get_og("og:site_name") }
 }
 
 fn strip_html_tags(html: &str) -> String {
@@ -750,7 +763,7 @@ async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, Stri
         .unwrap_or("").to_string();
 
     // Fetch metadata
-    let (title, description, site_name, image_url, author_name) = if is_tweet {
+    let (title, description, site_name, image_url, video_url, author_name) = if is_tweet {
         // Fetch oEmbed for author + caption
         let oembed_url = format!("https://publish.twitter.com/oembed?url={}&maxwidth=550&dnt=true", url);
         let (author, caption, oembed_thumb) = match client.get(&oembed_url).send().await {
@@ -764,76 +777,112 @@ async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, Stri
             }
             Err(_) => (None, String::new(), None),
         };
-        // Try tweet page og:image (actual media image, not profile pic)
-        let tweet_og_image = async {
+        // Fetch tweet page to get og:image (actual media) and og:video
+        let (tweet_og_image, tweet_og_video) = async {
             let resp = client.get(&url).header("Accept-Language", "en-US,en;q=0.9").send().await.ok()?;
             let body = resp.text().await.ok()?;
-            let (_, _, img, _) = parse_og_tags(&body);
-            img.map(|u| resolve_url(&u, &url))
-        }.await;
+            let og = parse_og_tags(&body);
+            let img = og.image.map(|u| resolve_url(&u, &url));
+            let vid = og.video.map(|u| resolve_url(&u, &url));
+            Some((img, vid))
+        }.await.unwrap_or((None, None));
         let image_url = tweet_og_image.or(oembed_thumb);
         (
             author.as_deref().map(|a| format!("{} on X", a)),
             Some(caption),
             Some("X".to_string()),
             image_url,
+            tweet_og_video,
             author,
         )
     } else {
         match client.get(&url).send().await {
             Ok(resp) => {
                 let body = resp.text().await.unwrap_or_default();
-                let (t, d, img, s) = parse_og_tags(&body);
-                // Resolve relative og:image URL against the page origin
-                let resolved_img = img.map(|u| resolve_url(&u, &url));
-                (t, d, s, resolved_img, None)
+                let og = parse_og_tags(&body);
+                let resolved_img = og.image.map(|u| resolve_url(&u, &url));
+                let resolved_vid = og.video.map(|u| resolve_url(&u, &url));
+                (og.title, og.description, og.site_name, resolved_img, resolved_vid, None)
             }
-            Err(_) => (None, None, None, None, None),
+            Err(_) => (None, None, None, None, None, None),
         }
     };
 
-    // Try to download og:image / tweet thumbnail
-    let downloaded_image: Option<(image::DynamicImage, Vec<u8>, String)> = if let Some(ref img_url) = image_url {
-        let result: Option<(image::DynamicImage, Vec<u8>, String)> = async {
-            let resp = client.get(img_url)
-                .header("Referer", &url)
-                .header("Accept", "image/webp,image/apng,image/*,*/*;q=0.8")
+    // Helper: download bytes with browser-like headers
+    let fetch_bytes = |dl_url: &str| {
+        let c = client.clone();
+        let u = url.clone();
+        let du = dl_url.to_string();
+        async move {
+            let resp = c.get(&du)
+                .header("Referer", &u)
+                .header("Accept", "image/webp,image/apng,image/*,video/mp4,*/*;q=0.8")
                 .send().await.ok()?;
             let resp = resp.error_for_status().ok()?;
-            let bytes = resp.bytes().await.ok()?;
-            let img = image::load_from_memory(&bytes).ok()?;
-            let ext = std::path::Path::new(img_url.split('?').next().unwrap_or(img_url))
-                .extension().and_then(|s| s.to_str()).filter(|s| !s.is_empty())
-                .unwrap_or("jpg").to_lowercase();
-            Some((img, bytes.to_vec(), ext))
-        }.await;
-        result
-    } else {
-        None
+            Some(resp.bytes().await.ok()?.to_vec())
+        }
     };
 
-    let (file_path_str, thumb_path_str, width, height, dominant_color, palette) = match downloaded_image {
-        Some((img, bytes, ext)) => {
-            let (w, h) = (img.width(), img.height());
-            let file_path = images_dir.join(format!("{}.{}", id, ext));
-            std::fs::write(&file_path, &bytes).map_err(|e| e.to_string())?;
-            let thumb_path = thumbs_dir.join(format!("{}.jpg", id));
-            save_thumb(&img, &thumb_path)?;
-            let rgb = img.to_rgb8();
-            let colors = get_palette(rgb.as_raw(), ColorFormat::Rgb, 10, 5).ok();
-            let (dom, pal) = if let Some(ref cols) = colors {
-                let hexes: Vec<String> = cols.iter().map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)).collect();
-                (hexes.first().cloned(), serde_json::to_string(&hexes).ok())
-            } else { (None, None) };
-            (file_path.to_string_lossy().to_string(), thumb_path.to_string_lossy().to_string(), w, h, dom, pal)
+    // Try video first (og:video), then image (og:image)
+    let (file_path_str, thumb_path_str, width, height, dominant_color, palette) = 'outer: {
+        // ── Video branch ────────────────────────────────────────────────────────
+        if let Some(ref vid_url) = video_url {
+            if let Some(bytes) = fetch_bytes(vid_url).await {
+                let ext = std::path::Path::new(vid_url.split('?').next().unwrap_or(vid_url))
+                    .extension().and_then(|s| s.to_str()).filter(|s| !s.is_empty())
+                    .unwrap_or("mp4").to_lowercase();
+                let file_path = images_dir.join(format!("{}.{}", id, ext));
+                if std::fs::write(&file_path, &bytes).is_ok() {
+                    // Generate thumbnail via qlmanage (same path as regular video)
+                    if let Ok(frame_bytes) = extract_video_frame(&file_path) {
+                        if let Ok(img) = image::load_from_memory(&frame_bytes) {
+                            let (w, h) = (img.width(), img.height());
+                            let thumb_path = thumbs_dir.join(format!("{}.jpg", id));
+                            if save_thumb(&img, &thumb_path).is_ok() {
+                                let rgb = img.to_rgb8();
+                                let colors = get_palette(rgb.as_raw(), ColorFormat::Rgb, 10, 5).ok();
+                                let (dom, pal) = if let Some(ref cols) = colors {
+                                    let hexes: Vec<String> = cols.iter().map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)).collect();
+                                    (hexes.first().cloned(), serde_json::to_string(&hexes).ok())
+                                } else { (None, None) };
+                                break 'outer (file_path.to_string_lossy().to_string(), thumb_path.to_string_lossy().to_string(), w, h, dom, pal);
+                            }
+                        }
+                    }
+                }
+            }
         }
-        None => {
-            // No usable image — 1×1 placeholder so DB NOT NULL is satisfied
-            let ph = images_dir.join(format!("{}.png", id));
-            image::DynamicImage::new_rgb8(1, 1).save(&ph).ok();
-            let s = ph.to_string_lossy().to_string();
-            (s.clone(), s, 0, 0, None, None)
+
+        // ── Image branch ────────────────────────────────────────────────────────
+        if let Some(ref img_url) = image_url {
+            if let Some(bytes) = fetch_bytes(img_url).await {
+                if let Ok(img) = image::load_from_memory(&bytes) {
+                    let (w, h) = (img.width(), img.height());
+                    let ext = std::path::Path::new(img_url.split('?').next().unwrap_or(img_url))
+                        .extension().and_then(|s| s.to_str()).filter(|s| !s.is_empty())
+                        .unwrap_or("jpg").to_lowercase();
+                    let file_path = images_dir.join(format!("{}.{}", id, ext));
+                    if std::fs::write(&file_path, &bytes).is_ok() {
+                        let thumb_path = thumbs_dir.join(format!("{}.jpg", id));
+                        if save_thumb(&img, &thumb_path).is_ok() {
+                            let rgb = img.to_rgb8();
+                            let colors = get_palette(rgb.as_raw(), ColorFormat::Rgb, 10, 5).ok();
+                            let (dom, pal) = if let Some(ref cols) = colors {
+                                let hexes: Vec<String> = cols.iter().map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)).collect();
+                                (hexes.first().cloned(), serde_json::to_string(&hexes).ok())
+                            } else { (None, None) };
+                            break 'outer (file_path.to_string_lossy().to_string(), thumb_path.to_string_lossy().to_string(), w, h, dom, pal);
+                        }
+                    }
+                }
+            }
         }
+
+        // ── No usable media — 1×1 placeholder ──────────────────────────────────
+        let ph = images_dir.join(format!("{}.png", id));
+        image::DynamicImage::new_rgb8(1, 1).save(&ph).ok();
+        let s = ph.to_string_lossy().to_string();
+        (s.clone(), s, 0, 0, None, None)
     };
 
     let post_meta = serde_json::json!({
