@@ -197,12 +197,15 @@ Replaces `analyze_image` (title + tags + description) with a fully local pipelin
 - [ ] Relabel OpenRouter field in Settings: **"Advanced: use cloud model"** (not primary path)
 
 #### Social URL Cards (paste URL → rich card)
-> Requires `post_meta` column from Phase 8 migration v7 to be run first.
-- [ ] Detect pasted URL as a tweet (`x.com/*/status/*`) or generic social/web URL
-- [ ] **Twitter/X**: fetch oEmbed (`https://publish.twitter.com/oembed?url=…`) — no auth needed; returns author, text, images
-- [ ] **All other URLs**: fetch `og:` meta tags (title, description, `og:image`) and render as a link card
-- [ ] Store as `kind = 'link'`, `post_meta` JSON (see Phase 8 schema); thumbnail = downloaded `og:image`
-- [ ] Render `<PostCard>` in lightbox sidebar when `kind !== 'image'`
+- [x] Detect pasted URL as a tweet (`x.com/*/status/*`) or generic social/web URL
+- [x] **Twitter/X**: fetch oEmbed (`https://publish.twitter.com/oembed?url=…`) — author name + caption; `scraper` crate parses `og:` tags from SSR HTML
+- [x] **Video tweets**: `yt-dlp --no-warnings -f mp4 --get-url` extracts direct MP4 URL (Twitter SSR HTML hides video behind JS); `qlmanage` generates thumbnail from frame 0
+- [x] **Image tweets**: `og:image` used; profile pictures (`/profile_images/`) filtered out
+- [x] **All other URLs**: fetch `og:` meta tags (title, description, `og:image`, `og:video`) via `scraper`; relative URLs resolved against page origin
+- [x] Store as `kind = 'link'`, `post_meta` JSON (`platform`, `url`, `title`, `description`, `siteName`, `imageUrl`, `authorName`); schema migration v7
+- [x] Render `<PostCard>` in lightbox sidebar when `kind === 'link'`; old Twitter bird icon (`RiTwitterLine`) as platform badge
+- [x] Grid: platform badge overlay on link cards (bird icon for Twitter, domain text for others); falls back to `source_url` if `post_meta` missing
+- [x] Dev snapshot (`devSaveExample` / `devLoadExample`): includes `post_meta`; excludes soft-deleted items
 
 #### AI Semantic Search
 - [ ] Add `sqlite-vec` extension for local vector embeddings (no API calls at query time)
@@ -366,6 +369,7 @@ reveal_item_in_dir(path)                        -- via tauri-plugin-opener
 export_original(file_path, dest_path)           -- copy bytes to user-chosen path
 copy_image_to_clipboard(file_path)              -- decode → RGBA → macOS clipboard via arboard
 generate_prompt(thumb_path, api_key, model)     -> String  -- Midjourney/DALL-E/Flux style prompt via google/gemini-2.5-flash
+save_link(url)                                  -> SavedLink  -- og: scrape + yt-dlp for tweets; kind='link'
 ```
 
 ---
