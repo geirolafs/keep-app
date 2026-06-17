@@ -672,6 +672,19 @@ fn copy_image_to_clipboard(file_path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+fn resolve_url(img_url: &str, base_url: &str) -> String {
+    if img_url.starts_with("http://") || img_url.starts_with("https://") {
+        img_url.to_string()
+    } else if img_url.starts_with("//") {
+        format!("https:{}", img_url)
+    } else if img_url.starts_with('/') {
+        let origin = base_url.splitn(4, '/').take(3).collect::<Vec<_>>().join("/");
+        format!("{}{}", origin, img_url)
+    } else {
+        img_url.to_string() // best-effort for relative paths
+    }
+}
+
 fn parse_og_tags(html: &str) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
     use scraper::{Html, Selector};
     let doc = Html::parse_document(html);
@@ -738,30 +751,42 @@ async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, Stri
 
     // Fetch metadata
     let (title, description, site_name, image_url, author_name) = if is_tweet {
+        // Fetch oEmbed for author + caption
         let oembed_url = format!("https://publish.twitter.com/oembed?url={}&maxwidth=550&dnt=true", url);
-        match client.get(&oembed_url).send().await {
+        let (author, caption, oembed_thumb) = match client.get(&oembed_url).send().await {
             Ok(resp) => {
                 let oembed: serde_json::Value = resp.json().await.unwrap_or_default();
                 let author = oembed["author_name"].as_str().map(str::to_string);
                 let html_text = oembed["html"].as_str().unwrap_or("");
                 let caption = strip_html_tags(html_text);
                 let thumb = oembed["thumbnail_url"].as_str().map(str::to_string);
-                (
-                    author.as_deref().map(|a| format!("{} on X", a)),
-                    Some(caption),
-                    Some("X".to_string()),
-                    thumb,
-                    author,
-                )
+                (author, caption, thumb)
             }
-            Err(_) => (None, None, Some("X".to_string()), None, None),
-        }
+            Err(_) => (None, String::new(), None),
+        };
+        // Try tweet page og:image (actual media image, not profile pic)
+        let tweet_og_image = async {
+            let resp = client.get(&url).header("Accept-Language", "en-US,en;q=0.9").send().await.ok()?;
+            let body = resp.text().await.ok()?;
+            let (_, _, img, _) = parse_og_tags(&body);
+            img.map(|u| resolve_url(&u, &url))
+        }.await;
+        let image_url = tweet_og_image.or(oembed_thumb);
+        (
+            author.as_deref().map(|a| format!("{} on X", a)),
+            Some(caption),
+            Some("X".to_string()),
+            image_url,
+            author,
+        )
     } else {
         match client.get(&url).send().await {
             Ok(resp) => {
                 let body = resp.text().await.unwrap_or_default();
                 let (t, d, img, s) = parse_og_tags(&body);
-                (t, d, s, img, None)
+                // Resolve relative og:image URL against the page origin
+                let resolved_img = img.map(|u| resolve_url(&u, &url));
+                (t, d, s, resolved_img, None)
             }
             Err(_) => (None, None, None, None, None),
         }
@@ -770,7 +795,10 @@ async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, Stri
     // Try to download og:image / tweet thumbnail
     let downloaded_image: Option<(image::DynamicImage, Vec<u8>, String)> = if let Some(ref img_url) = image_url {
         let result: Option<(image::DynamicImage, Vec<u8>, String)> = async {
-            let resp = client.get(img_url).send().await.ok()?;
+            let resp = client.get(img_url)
+                .header("Referer", &url)
+                .header("Accept", "image/webp,image/apng,image/*,*/*;q=0.8")
+                .send().await.ok()?;
             let resp = resp.error_for_status().ok()?;
             let bytes = resp.bytes().await.ok()?;
             let img = image::load_from_memory(&bytes).ok()?;
