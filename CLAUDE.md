@@ -9,24 +9,23 @@ Full plan, schema, IPC commands, and decisions log: **PLAN.md**
 
 ## Current Phase
 
-**Phase 6 — complete. Phase 7 (Polish & Features) — next.**
+**Phase 7 — Polish & Features (in progress)**
 
-Phase 6 shipped:
-- [x] avif, bmp, tiff/tif, jxl, heic/heif support
-  - `avif-native`/`bmp`/`tiff` feature flags; `jxl-oxide` crate; `libheif-rs` crate (system `libheif`)
-- [x] SVG — copy as-is, thumb_path = file_path; checkerboard bg in grid (white) and lightbox; analyze hidden
-- [x] GIF — original file used as thumb (animated in grid + lightbox); frame 0 needed for analyze
-- [x] Drag-drop duplicate fix — `mounted` guard on async Tauri listener
-- [x] Example snapshot restore fixed for GIF/SVG (thumb_name === file_name → `images/` dir)
+Phase 7 shipped so far:
+- [x] **Retina thumbnails** — 1600px max, Lanczos3 filter, JPEG quality 85; `save_thumb()` helper in Rust
+- [x] **Refresh Thumbnails** — `refresh_thumbnails` Rust command; JS loops per-image with `x of y` progress; in Dev section of Settings
+- [x] **Image dimensions + format** — lightbox sidebar shows `{width} × {height} · {EXT}`
+- [x] **Sort tags by count** — Tags tab sorted count-desc, alpha tiebreak
+- [x] **Masonry grid refactor** — replaced CSS `columns` with explicit flex columns; `ResizeObserver` drives column count (2/3/4/5); eliminates CSS balancing alignment bugs
+- [x] **Reveal in Finder** — `revealItemInDir` button in lightbox date/source row
+- [x] **Dev tools → Settings modal** — Save E1, Load E1, Reset (2-step confirm), Randomize Order, Refresh Thumbs all in Settings Developer section; toolbar cleaned up
+- [x] **Grid polish** — removed rounded corners; removed focus outline on cards; `block` on img/video eliminates inline baseline gap
 
-Phase 7 targets — see PLAN.md for full spec:
-- [ ] **Retina thumbnails** — 400px → 800px in `process_and_save`
-- [ ] **Grid column slider** — 2–12 columns, persisted to settings
+Phase 7 remaining — see PLAN.md:
+- [ ] **Grid column slider** — 2–12 columns, persisted to settings (note: masonry now uses flex columns, not CSS `column-count`)
 - [ ] **⌘K search dialog** — centered overlay, live results, keyboard nav
-- [ ] Sort tags by occurrence count
-- [ ] Bin / soft delete — schema migration v4 (`deleted_at`), Bin tab, auto-purge 90d, macOS Trash
-- [ ] Image dimensions + format in lightbox sidebar
-- [ ] SVG + GIF analysis; Generate prompt button (`google/gemini-2.0-flash-exp`)
+- [ ] Bin / soft delete — schema migration v5 (`deleted_at`), Bin tab, auto-purge 90d, macOS Trash
+- [ ] Generate prompt button — `google/gemini-2.0-flash-exp`, one-click copy
 - [ ] Social URL cards — paste tweet/URL → og: scrape → `<PostCard>` in lightbox
 - [ ] AI semantic search — `sqlite-vec` embeddings, hybrid keyword + cosine
 

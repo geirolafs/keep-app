@@ -36,6 +36,103 @@ async function getDb() {
   return Database.load("sqlite:mood.db");
 }
 
+export async function devResetAll() {
+  try {
+    const db = await getDb();
+    await db.execute("DELETE FROM collection_images");
+    await db.execute("DELETE FROM image_tags");
+    await db.execute("DELETE FROM images");
+    await db.execute("DELETE FROM collections");
+    await db.execute("DELETE FROM tags");
+    await invoke("reset_all_images");
+    window.location.reload();
+  } catch (err) {
+    console.error("[mood] resetAll failed:", err);
+  }
+}
+
+export async function devSaveExample(n: number) {
+  try {
+    const db = await getDb();
+    const imgs = await db.select<(Image & { updated_at: number })[]>("SELECT * FROM images");
+    const tags = await db.select<{ id: string; name: string }[]>("SELECT * FROM tags");
+    const imageTags = await db.select<{ image_id: string; tag_id: string }[]>("SELECT * FROM image_tags");
+    const collections = await db.select<{ id: string; name: string }[]>("SELECT * FROM collections");
+    const collectionImages = await db.select<{ collection_id: string; image_id: string }[]>("SELECT * FROM collection_images");
+    const snapshot = {
+      images: imgs.map((img) => ({
+        id: img.id, file_name: img.file_path.split("/").pop()!, thumb_name: img.thumb_path.split("/").pop()!,
+        source_url: img.source_url, title: img.title, notes: img.notes, description: img.description,
+        dominant_color: img.dominant_color, palette: img.palette, width: img.width, height: img.height,
+        created_at: img.created_at, updated_at: (img as Image & { updated_at: number }).updated_at ?? img.created_at, kind: img.kind ?? "image",
+      })),
+      tags, image_tags: imageTags, collections, collection_images: collectionImages,
+    };
+    await invoke("save_example_snapshot", { n, snapshotJson: JSON.stringify(snapshot) });
+    toastManager.add({ title: `Example ${n} saved (${imgs.length} images)`, type: "success", timeout: 3000 });
+  } catch (err) {
+    console.error("[mood] saveExample failed:", err);
+    toastManager.add({ title: "Failed to save example", type: "error" });
+  }
+}
+
+export async function devLoadExample(n: number) {
+  try {
+    const result = await invoke<{ data_dir: string; snapshot_json: string }>("load_example_snapshot", { n });
+    const snapshot = JSON.parse(result.snapshot_json) as {
+      images: Array<{ id: string; file_name: string; thumb_name: string; source_url: string | null; title: string | null; notes: string | null; description: string | null; dominant_color: string | null; palette: string | null; width: number; height: number; created_at: number; updated_at: number; kind?: string }>;
+      tags: Array<{ id: string; name: string }>; image_tags: Array<{ image_id: string; tag_id: string }>;
+      collections: Array<{ id: string; name: string }>; collection_images: Array<{ collection_id: string; image_id: string }>;
+    };
+    const db = await getDb();
+    await db.execute("DELETE FROM collection_images");
+    await db.execute("DELETE FROM image_tags");
+    await db.execute("DELETE FROM images");
+    await db.execute("DELETE FROM tags");
+    await db.execute("DELETE FROM collections");
+    for (const img of snapshot.images) {
+      await db.execute(
+        `INSERT INTO images (id, file_path, thumb_path, source_url, title, notes, description, dominant_color, palette, width, height, created_at, updated_at, kind) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+        [img.id, `${result.data_dir}/images/${img.file_name}`, `${result.data_dir}/${img.thumb_name === img.file_name ? "images" : "thumbs"}/${img.thumb_name}`,
+         img.source_url, img.title, img.notes, img.description ?? null, img.dominant_color, img.palette,
+         img.width, img.height, img.created_at, img.updated_at, img.kind ?? "image"]
+      );
+    }
+    for (const tag of snapshot.tags) await db.execute("INSERT INTO tags (id, name) VALUES ($1, $2)", [tag.id, tag.name]);
+    for (const it of snapshot.image_tags) await db.execute("INSERT INTO image_tags (image_id, tag_id) VALUES ($1, $2)", [it.image_id, it.tag_id]);
+    for (const col of snapshot.collections) await db.execute("INSERT INTO collections (id, name) VALUES ($1, $2)", [col.id, col.name]);
+    for (const ci of snapshot.collection_images) await db.execute("INSERT INTO collection_images (collection_id, image_id) VALUES ($1, $2)", [ci.collection_id, ci.image_id]);
+    window.location.reload();
+  } catch (err) {
+    console.error("[mood] loadExample failed:", err);
+    toastManager.add({ title: String(err), type: "error" });
+  }
+}
+
+export async function refreshThumbnails(
+  onProgress?: (done: number, total: number) => void
+) {
+  try {
+    const db = await getDb();
+    const all = await db.select<{ file_path: string; thumb_path: string; kind: string }[]>(
+      "SELECT file_path, thumb_path, kind FROM images"
+    );
+    const eligible = all.filter((i) => i.kind !== "video" && i.thumb_path !== i.file_path);
+    let count = 0;
+    for (let i = 0; i < eligible.length; i++) {
+      onProgress?.(i, eligible.length);
+      const n = await invoke<number>("refresh_thumbnails", { items: [eligible[i]] });
+      count += n;
+    }
+    onProgress?.(eligible.length, eligible.length);
+    toastManager.add({ title: `Refreshed ${count} thumbnail${count !== 1 ? "s" : ""}`, type: "success", timeout: 3000 });
+    window.location.reload();
+  } catch (err) {
+    console.error("[mood] refreshThumbnails failed:", err);
+    toastManager.add({ title: String(err), type: "error" });
+  }
+}
+
 export function useImages() {
   const [images, setImages] = useState<Image[]>([]);
 

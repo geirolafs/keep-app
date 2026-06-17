@@ -35,6 +35,7 @@ interface GridProps {
   selectedId?: string | null;
   onSelectId?: (id: string | null) => void;
   onCreateCollection?: () => void;
+  shuffleSeed?: number;
 }
 
 export default function Grid({
@@ -44,8 +45,9 @@ export default function Grid({
   selectedId = null,
   onSelectId,
   onCreateCollection,
+  shuffleSeed = 0,
 }: GridProps) {
-  const { images: allImages, imgSrc, savePath, deleteImage, updateTitle, updateNotes, updateDescription, resetAll, saveExample, loadExample } = useImages();
+  const { images: allImages, imgSrc, savePath, deleteImage, updateTitle, updateNotes, updateDescription } = useImages();
   const { imageTagsMap, addTag, removeTag, deleteTag, renameTag } = useTags();
   const { getSetting } = useSettings();
   const { collections, getCollectionImageIds, getCollectionCover, deleteCollection, renameCollection, addToCollection } = useCollections();
@@ -57,7 +59,6 @@ export default function Grid({
     | { type: "collection"; id: string; name: string }
     | { type: "tag"; id: string; name: string }
     | { type: "batch"; count: number }
-    | { type: "reset" }
     | null
   >(null);
   const [batchTagInput, setBatchTagInput] = useState("");
@@ -68,6 +69,31 @@ export default function Grid({
   const analyzeCancelRef = useRef(false);
   const [visibleCount, setVisibleCount] = useState(50);
   const sentinelRef = useRef<HTMLDivElement>(null);
+  const [numCols, setNumCols] = useState(4);
+  const masonryRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = masonryRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      const w = entry.contentRect.width;
+      if (w >= 1280) setNumCols(5);
+      else if (w >= 1024) setNumCols(4);
+      else if (w >= 640) setNumCols(3);
+      else setNumCols(2);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const shuffleOrderRef = useRef<Map<string, number> | null>(null);
+  useEffect(() => {
+    if (shuffleSeed > 0) {
+      const map = new Map<string, number>();
+      allImages.forEach((img) => map.set(img.id, Math.random()));
+      shuffleOrderRef.current = map;
+    } else {
+      shuffleOrderRef.current = null;
+    }
+  }, [shuffleSeed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Compute filtered + sorted images
   const filteredImages = (() => {
@@ -96,11 +122,16 @@ export default function Grid({
       );
     }
 
-    imgs.sort((a, b) =>
-      sort === "newest"
-        ? (b.created_at ?? 0) - (a.created_at ?? 0)
-        : (a.created_at ?? 0) - (b.created_at ?? 0)
-    );
+    if (shuffleSeed > 0 && shuffleOrderRef.current) {
+      const order = shuffleOrderRef.current;
+      imgs.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+    } else {
+      imgs.sort((a, b) =>
+        sort === "newest"
+          ? (b.created_at ?? 0) - (a.created_at ?? 0)
+          : (a.created_at ?? 0) - (b.created_at ?? 0)
+      );
+    }
 
     return imgs;
   })();
@@ -310,8 +341,6 @@ export default function Grid({
       if (selectedId === confirmDelete.id) onSelectId?.(null);
     } else if (confirmDelete.type === "batch") {
       await doBatchDelete();
-    } else if (confirmDelete.type === "reset") {
-      resetAll();
     }
     setConfirmDelete(null);
   };
@@ -364,7 +393,7 @@ export default function Grid({
             return (
               <ContextMenu.Root key={col.id}>
                 <ContextMenu.Trigger
-                  className="rounded-lg overflow-hidden cursor-pointer relative aspect-square bg-muted hover:opacity-90 transition-opacity"
+                  className="overflow-hidden cursor-pointer relative aspect-square bg-muted hover:opacity-90 transition-opacity outline-none"
                   onClick={() => onSelectId?.(col.id)}
                   tabIndex={0}
                   onKeyDown={(e) => e.key === "Enter" && onSelectId?.(col.id)}
@@ -445,7 +474,7 @@ export default function Grid({
       }
     }
     const tagList = Array.from(tagCounts.entries()).sort((a, b) =>
-      a[1].name.localeCompare(b[1].name)
+      b[1].count - a[1].count || a[1].name.localeCompare(b[1].name)
     );
 
     return (
@@ -559,76 +588,79 @@ export default function Grid({
     }
 
     const visibleImages = filteredImages.slice(0, visibleCount);
+
+    // Distribute items into columns sequentially (same order as CSS columns)
+    const perCol = Math.ceil(visibleImages.length / numCols);
+    const cols = Array.from({ length: numCols }, (_, i) =>
+      visibleImages.slice(i * perCol, (i + 1) * perCol)
+    );
+
+    const renderCard = (img: typeof visibleImages[0]) => (
+      <div
+        key={img.id}
+        className={cn(
+          "group overflow-hidden relative cursor-pointer outline-none",
+          selectedIds.has(img.id) &&
+            "ring-2 ring-primary ring-offset-2 ring-offset-background"
+        )}
+        style={img.file_path.toLowerCase().endsWith(".svg")
+          ? { backgroundColor: "#fff" }
+          : { backgroundColor: img.dominant_color ?? undefined }}
+        onClick={(e) => {
+          if (e.metaKey || e.shiftKey) {
+            e.preventDefault();
+            toggleSelect(img.id);
+          } else {
+            setOpenId(img.id);
+            if (selectedIds.size > 0) setSelectedIds(new Set());
+          }
+        }}
+        tabIndex={0}
+        onKeyDown={(e) => e.key === "Enter" && setOpenId(img.id)}
+      >
+        {img.kind === "video" ? (
+          <video
+            src={imgSrc(img.file_path)}
+            autoPlay muted loop playsInline
+            className="block w-full object-cover group-hover:opacity-90"
+            draggable={false}
+          />
+        ) : (
+          <LazyImage
+            src={imgSrc(img.thumb_path)}
+            width={img.width}
+            height={img.height}
+            className="block w-full object-cover group-hover:opacity-90"
+            draggable={false}
+          />
+        )}
+        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
+        <div className="absolute bottom-0 left-0 right-0 hidden group-hover:flex flex-wrap gap-1 p-2 bg-gradient-to-t from-black/60 to-transparent">
+          {(imageTagsMap.get(img.id) ?? []).slice(0, 3).map((t) => (
+            <span key={t.id} className="rounded-full bg-white/80 px-1.5 py-0.5 text-[10px] text-black font-medium">
+              {t.name}
+            </span>
+          ))}
+        </div>
+        {selectedIds.size > 0 && (
+          <div className={cn(
+            "absolute top-2 left-2 size-5 rounded-full border-2 flex items-center justify-center text-xs font-bold transition-colors",
+            selectedIds.has(img.id)
+              ? "border-primary bg-primary text-primary-foreground"
+              : "border-white/60 bg-black/30"
+          )}>
+            {selectedIds.has(img.id) && "✓"}
+          </div>
+        )}
+      </div>
+    );
+
     return (
-      <div className="flex-1 overflow-y-auto p-4">
-        <div className="columns-2 gap-3 sm:columns-3 lg:columns-4 xl:columns-5">
-          {visibleImages.map((img) => (
-            <div
-              key={img.id}
-              className={cn(
-                "group mb-3 break-inside-avoid overflow-hidden rounded-lg relative cursor-pointer",
-                selectedIds.has(img.id) &&
-                  "ring-2 ring-primary ring-offset-2 ring-offset-background"
-              )}
-              style={img.file_path.toLowerCase().endsWith(".svg")
-                ? { backgroundColor: "#fff" }
-                : { backgroundColor: img.dominant_color ?? undefined }}
-              onClick={(e) => {
-                if (e.metaKey || e.shiftKey) {
-                  e.preventDefault();
-                  toggleSelect(img.id);
-                } else {
-                  setOpenId(img.id);
-                  if (selectedIds.size > 0) setSelectedIds(new Set());
-                }
-              }}
-              tabIndex={0}
-              onKeyDown={(e) => e.key === "Enter" && setOpenId(img.id)}
-            >
-              {img.kind === "video" ? (
-                <video
-                  src={imgSrc(img.file_path)}
-                  autoPlay
-                  muted
-                  loop
-                  playsInline
-                  className="w-full object-cover group-hover:opacity-90"
-                  draggable={false}
-                />
-              ) : (
-                <LazyImage
-                  src={imgSrc(img.thumb_path)}
-                  width={img.width}
-                  height={img.height}
-                  className="w-full object-cover group-hover:opacity-90"
-                  draggable={false}
-                />
-              )}
-              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
-              {/* Tag chips on hover */}
-              <div className="absolute bottom-0 left-0 right-0 hidden group-hover:flex flex-wrap gap-1 p-2 bg-gradient-to-t from-black/60 to-transparent">
-                {(imageTagsMap.get(img.id) ?? []).slice(0, 3).map((t) => (
-                  <span
-                    key={t.id}
-                    className="rounded-full bg-white/80 px-1.5 py-0.5 text-[10px] text-black font-medium"
-                  >
-                    {t.name}
-                  </span>
-                ))}
-              </div>
-              {/* Selection indicator */}
-              {selectedIds.size > 0 && (
-                <div
-                  className={cn(
-                    "absolute top-2 left-2 size-5 rounded-full border-2 flex items-center justify-center text-xs font-bold transition-colors",
-                    selectedIds.has(img.id)
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : "border-white/60 bg-black/30"
-                  )}
-                >
-                  {selectedIds.has(img.id) && "✓"}
-                </div>
-              )}
+      <div ref={masonryRef} className="flex-1 overflow-y-auto p-4">
+        <div className="flex gap-3 items-start">
+          {cols.map((col, colIdx) => (
+            <div key={colIdx} className="flex flex-1 flex-col gap-3 min-w-0">
+              {col.map(renderCard)}
             </div>
           ))}
         </div>
@@ -651,10 +683,9 @@ export default function Grid({
     cd.type === "collection" ? `Delete "${cd.name}"?` :
     cd.type === "tag" ? `Delete tag "${cd.name}"?` :
     cd.type === "batch" ? `Delete ${cd.count} image${cd.count !== 1 ? "s" : ""}?` :
-    "Delete everything?";
+    "";
   const confirmDescription = !cd ? undefined :
     cd.type === "tag" ? "This removes the tag from all images." :
-    cd.type === "reset" ? "This permanently deletes all images and data. Cannot be undone." :
     undefined;
 
   return (
@@ -722,28 +753,6 @@ export default function Grid({
           )}
 
           <div className="flex-1" data-tauri-drag-region />
-          {import.meta.env.DEV && (
-            <>
-              <button
-                onClick={() => saveExample(1)}
-                className="rounded-md border border-border px-3 py-1 text-xs font-medium text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
-              >
-                Save E1
-              </button>
-              <button
-                onClick={() => loadExample(1)}
-                className="rounded-md border border-border px-3 py-1 text-xs font-medium text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
-              >
-                E1
-              </button>
-              <button
-                onClick={() => setConfirmDelete({ type: "reset" })}
-                className="rounded-md border border-destructive/50 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 transition-colors"
-              >
-                Reset
-              </button>
-            </>
-          )}
           {allImages.length > 0 && (
             <button
               onClick={handleAnalyzeAll}

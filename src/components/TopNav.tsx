@@ -1,4 +1,5 @@
-import { RiSearchLine, RiSortAsc, RiSortDesc, RiSettings3Line, RiEyeLine, RiEyeOffLine } from "@remixicon/react";
+import { RiSearchLine, RiSortAsc, RiSortDesc, RiSettings3Line, RiEyeLine, RiEyeOffLine, RiLoader4Line } from "@remixicon/react";
+import { devSaveExample, devLoadExample, devResetAll, refreshThumbnails } from "@/hooks/use-images";
 import {
 	forwardRef,
 	type RefObject,
@@ -26,6 +27,8 @@ interface TopNavProps {
 	onSortChange: (s: Sort) => void;
 	onCreateCollection: (name: string) => void;
 	searchInputRef?: RefObject<HTMLInputElement | null>;
+	shuffleSeed?: number;
+	onShuffle?: () => void;
 }
 
 const TABS: { id: Tab; label: string }[] = [
@@ -44,6 +47,8 @@ const TopNav = forwardRef<TopNavHandle, TopNavProps>(function TopNav(
 		onSortChange,
 		onCreateCollection,
 		searchInputRef,
+		shuffleSeed = 0,
+		onShuffle,
 	}: TopNavProps,
 	ref: React.Ref<TopNavHandle>,
 ) {
@@ -55,6 +60,8 @@ const TopNav = forwardRef<TopNavHandle, TopNavProps>(function TopNav(
 	const [showApiKey, setShowApiKey] = useState(false);
 	const [analyzeMode, setAnalyzeMode] = useState<AnalyzeMode>("manual");
 	const [modelValue, setModelValue] = useState("anthropic/claude-sonnet-4-6");
+	const [refreshProgress, setRefreshProgress] = useState<{ done: number; total: number } | null>(null);
+	const [resetConfirm, setResetConfirm] = useState(false);
 	const { getSetting, setSetting } = useSettings();
 
 	useImperativeHandle(ref, () => ({ startNaming }));
@@ -80,7 +87,13 @@ const TopNav = forwardRef<TopNavHandle, TopNavProps>(function TopNav(
 		setAnalyzeMode(mode ?? "manual");
 		setModelValue(model ?? "anthropic/claude-sonnet-4-6");
 		setShowApiKey(false);
+		setResetConfirm(false);
 		setSettingsOpen(true);
+	};
+
+	const handleRefreshThumbnails = async () => {
+		await refreshThumbnails((done, total) => setRefreshProgress({ done, total }));
+		setRefreshProgress(null);
 	};
 
 	const saveSettings = async () => {
@@ -247,6 +260,41 @@ const TopNav = forwardRef<TopNavHandle, TopNavProps>(function TopNav(
 								</select>
 							</div>
 						</div>
+
+						{/* Dev tools */}
+						{import.meta.env.DEV && (
+							<div className="mt-4 border-t border-border/50 pt-4">
+								<label className="mb-2 block text-sm font-medium text-muted-foreground">Developer</label>
+								<div className="flex gap-2 mb-2">
+									<Button variant="outline" size="sm" className="flex-1" onClick={() => devSaveExample(1)}>Save E1</Button>
+									<Button variant="outline" size="sm" className="flex-1" onClick={() => devLoadExample(1)}>Load E1</Button>
+									{resetConfirm ? (
+										<>
+											<Button variant="destructive" size="sm" className="flex-1" onClick={() => { setResetConfirm(false); devResetAll(); }}>Confirm</Button>
+											<Button variant="outline" size="sm" onClick={() => setResetConfirm(false)}>Cancel</Button>
+										</>
+									) : (
+										<Button variant="outline" size="sm" className="flex-1 text-destructive border-destructive/50 hover:bg-destructive/10" onClick={() => setResetConfirm(true)}>Reset</Button>
+									)}
+								</div>
+								<div className="flex gap-2">
+									<Button variant="outline" size="sm" className="flex-1" onClick={onShuffle}>
+										Randomize {shuffleSeed > 0 && `(×${shuffleSeed})`}
+									</Button>
+									<Button
+										variant="outline"
+										size="sm"
+										className="flex-1"
+										disabled={!!refreshProgress}
+										onClick={handleRefreshThumbnails}
+									>
+										{refreshProgress
+											? <><RiLoader4Line className="mr-1.5 size-3.5 animate-spin" />{refreshProgress.done} of {refreshProgress.total}</>
+											: "Refresh Thumbs"}
+									</Button>
+								</div>
+							</div>
+						)}
 
 						<div className="mt-5 flex justify-end gap-2">
 							<AlertDialog.Close render={<Button variant="outline" size="sm" />}>

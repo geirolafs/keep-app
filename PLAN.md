@@ -117,19 +117,22 @@ Add support for additional file formats beyond the current `png | jpg | jpeg | g
 ### Phase 7 — Polish & Features
 
 #### Thumbnails
-- [ ] **Retina-crisp thumbnails**: increase thumbnail generation from 400px → 800px max dimension (`img.resize(800, 800, FilterType::Triangle)` in `process_and_save`). Doubles file size but sharp on 2× Retina displays. Existing thumbnails stay as-is until re-imported.
+- [x] **Retina-crisp thumbnails**: 1600px max dimension, `FilterType::Lanczos3`, JPEG quality 85. `save_thumb()` Rust helper used by all three code paths (process_and_save, process_video_from_path, refresh_thumbnails).
+- [x] **Refresh Thumbnails**: `refresh_thumbnails(items)` Rust command; JS loops per-image calling with single-item slice for `x of y` progress; skips SVG/GIF/video (thumb = file). Button in Settings → Developer section.
 
 #### Grid
-- [ ] **Column count slider**: 2–12 columns; slider in TopNav (or accessible via toolbar); persisted to `settings` table. Masonry uses CSS `column-count` — changing it is a one-liner. Default: current behaviour (~4–5 auto columns).
+- [x] **Masonry alignment fix**: replaced CSS `columns` (which has browser balancing alignment bugs) with explicit flex columns. `ResizeObserver` on container drives `numCols` state (2/3/4/5 at same breakpoints). Items distributed sequentially into column arrays. Each column is `flex flex-col gap-3 items-start`.
+- [x] **Grid polish**: removed `rounded-lg` from cards; removed `outline` focus ring; `display: block` on img/video eliminates inline baseline descender gap.
+- [ ] **Column count slider**: 2–12 columns; persisted to `settings` table. Note: masonry now uses explicit flex columns (not CSS `column-count`) — slider sets `numCols` state directly.
 
 #### Search
 - [ ] **⌘K search dialog**: centered overlay, large search input, live results (images by title/tag/description, collections, tags) with keyboard navigation (↑↓ select, Enter open, Esc close). Replaces/augments existing ⌘F top-nav focus. Results grouped by type.
 
 #### Tags
-- [ ] **Sort tags by count**: fetch tag counts via `COUNT(image_id)` JOIN; toggle count-desc / count-asc / alpha in Tags tab
+- [x] **Sort tags by count**: Tags tab sorted count-desc, alpha tiebreak. Computed client-side from `imageTagsMap`.
 
 #### Bin / Soft Delete
-- [ ] **Schema migration v4**: `ALTER TABLE images ADD COLUMN deleted_at INTEGER` (NULL = active)
+- [ ] **Schema migration v5**: `ALTER TABLE images ADD COLUMN deleted_at INTEGER` (NULL = active)
 - [ ] Filter all queries with `WHERE deleted_at IS NULL`
 - [ ] **Bin tab** in TopNav — shows deleted items, sorted newest-first
 - [ ] **Per-item restore** (set `deleted_at = NULL`) and **permanent delete** (move file to macOS Trash via `tauri-plugin-trash`)
@@ -138,7 +141,12 @@ Add support for additional file formats beyond the current `png | jpg | jpeg | g
 - [ ] Multi-select + bulk restore in Bin
 
 #### Lightbox
-- [ ] **Image dimensions + format**: show `{width} × {height} · {EXT}` in sidebar (data already in DB, format from `file_path` extension)
+- [x] **Image dimensions + format**: `{width} × {height} · {EXT}` in sidebar date/source section; hidden for SVGs (width=0).
+- [x] **Reveal in Finder**: `revealItemInDir(file_path)` via `@tauri-apps/plugin-opener`; shown as "Reveal" link next to Source in lightbox sidebar.
+
+#### Dev Tools
+- [x] **Settings modal consolidation**: Save E1, Load E1, Reset (2-step inline confirm), Randomize Order button, Refresh Thumbs button all moved to Settings → Developer section (DEV-only). Toolbar now only has Analyze All + Add.
+- [x] **Randomize Order**: button increments `shuffleSeed`; Grid assigns random weights per-image on seed change, sorts by weight. Counter shows `(×N)`.
 
 #### AI Analysis
 - [x] **SVG analysis**: rasterize via `qlmanage` (reuses video frame extractor, no new dep) → PNG → `image/png` to vision API

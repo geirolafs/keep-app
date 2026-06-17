@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   RiArrowLeftLine,
   RiArrowRightLine,
   RiCloseLine,
   RiExternalLinkLine,
+  RiFolderOpenLine,
   RiLoader4Line,
 } from "@remixicon/react";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -500,18 +502,33 @@ export function Lightbox({
 
         {/* Date + source */}
         <div className="border-b border-border/50 px-5 py-3 text-xs text-muted-foreground">
-          <p>{date}</p>
-          {image.source_url && (
-            <a
-              href={image.source_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-1 inline-flex items-center gap-0.5 hover:text-foreground transition-colors"
-            >
-              <RiExternalLinkLine className="h-3 w-3" />
-              Source
-            </a>
+          {(image.width > 0 || image.height > 0) && (
+            <p className="mb-0.5">
+              {image.width} × {image.height} · {image.file_path.split(".").pop()?.toUpperCase()}
+            </p>
           )}
+          <p>{date}</p>
+          <div className="mt-1 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => revealItemInDir(image.file_path)}
+              className="inline-flex items-center gap-0.5 hover:text-foreground transition-colors"
+            >
+              <RiFolderOpenLine className="h-3 w-3" />
+              Reveal
+            </button>
+            {image.source_url && (
+              <a
+                href={image.source_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-0.5 hover:text-foreground transition-colors"
+              >
+                <RiExternalLinkLine className="h-3 w-3" />
+                Source
+              </a>
+            )}
+          </div>
         </div>
 
         {/* Spacer */}

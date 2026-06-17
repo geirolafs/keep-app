@@ -4,6 +4,13 @@ use image::imageops::FilterType;
 use tauri::Manager;
 use tauri_plugin_sql::{Builder as SqlBuilder, Migration, MigrationKind};
 
+fn save_thumb(img: &image::DynamicImage, path: &std::path::Path) -> Result<(), String> {
+    let thumb = img.resize(1600, 1600, FilterType::Lanczos3);
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(file, 85);
+    thumb.write_with_encoder(encoder).map_err(|e| e.to_string())
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct AnalysisResult {
     title: String,
@@ -155,11 +162,8 @@ async fn process_video_from_path(
     let img = image::load_from_memory(&frame_bytes).map_err(|e| e.to_string())?;
     let (width, height) = (img.width(), img.height());
 
-    let thumb = img.resize(400, 400, FilterType::Triangle);
     let thumb_path = thumbs_dir.join(format!("{}.jpg", id));
-    thumb
-        .save_with_format(&thumb_path, image::ImageFormat::Jpeg)
-        .map_err(|e| e.to_string())?;
+    save_thumb(&img, &thumb_path)?;
 
     let rgb_img = img.to_rgb8();
     let raw_pixels = rgb_img.as_raw();
@@ -246,11 +250,8 @@ async fn process_and_save(
     let thumb_path = if safe_ext.eq_ignore_ascii_case("gif") {
         file_path.clone()
     } else {
-        let thumb = img.resize(400, 400, FilterType::Triangle);
         let p = thumbs_dir.join(format!("{}.jpg", id));
-        thumb
-            .save_with_format(&p, image::ImageFormat::Jpeg)
-            .map_err(|e| e.to_string())?;
+        save_thumb(&img, &p)?;
         p
     };
 
@@ -343,6 +344,43 @@ async fn reset_all_images(app: tauri::AppHandle) -> Result<(), String> {
     let _ = std::fs::remove_dir_all(data_dir.join("images"));
     let _ = std::fs::remove_dir_all(data_dir.join("thumbs"));
     Ok(())
+}
+
+#[derive(serde::Deserialize)]
+struct RefreshItem {
+    file_path: String,
+    thumb_path: String,
+    kind: String,
+}
+
+#[tauri::command]
+async fn refresh_thumbnails(items: Vec<RefreshItem>) -> Result<u32, String> {
+    let mut count = 0u32;
+    for item in &items {
+        if item.kind == "video" || item.thumb_path == item.file_path {
+            continue;
+        }
+        let ext = std::path::Path::new(&item.file_path)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let bytes = match std::fs::read(&item.file_path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let img = if ext == "jxl" {
+            match decode_jxl(&bytes) { Ok(i) => i, Err(_) => continue }
+        } else if ext == "heic" || ext == "heif" {
+            match decode_heic(&bytes) { Ok(i) => i, Err(_) => continue }
+        } else {
+            match image::load_from_memory(&bytes) { Ok(i) => i, Err(_) => continue }
+        };
+        if save_thumb(&img, std::path::Path::new(&item.thumb_path)).is_ok() {
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 fn copy_dir_contents(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
@@ -557,6 +595,7 @@ pub fn run() {
             save_image_from_url,
             delete_image_files,
             reset_all_images,
+            refresh_thumbnails,
             save_example_snapshot,
             load_example_snapshot,
             analyze_image,

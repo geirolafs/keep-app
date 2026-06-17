@@ -13,6 +13,7 @@ function AppContent() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [sort, setSort] = useState<Sort>("newest");
+  const [shuffleSeed, setShuffleSeed] = useState(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const topNavRef = useRef<TopNavHandle>(null);
 
@@ -54,6 +55,8 @@ function AppContent() {
           onSortChange={setSort}
           onCreateCollection={handleCreateCollection}
           searchInputRef={searchInputRef}
+          shuffleSeed={shuffleSeed}
+          onShuffle={() => setShuffleSeed((s) => s + 1)}
         />
         <Grid
           activeTab={activeTab}
@@ -62,6 +65,7 @@ function AppContent() {
           selectedId={selectedId}
           onSelectId={setSelectedId}
           onCreateCollection={() => topNavRef.current?.startNaming()}
+          shuffleSeed={shuffleSeed}
         />
       </div>
       <ToastList />
