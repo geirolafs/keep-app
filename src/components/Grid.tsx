@@ -6,6 +6,7 @@ import {
 	RiImageAddLine,
 	RiPriceTag2Line,
 	RiUploadLine,
+	RiTwitterLine,
 } from "@remixicon/react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -808,15 +809,18 @@ export default function Grid({
 					/>
 				)}
 				{img.kind === "link" ? (() => {
+					let platform = "";
 					let domain = "";
 					try {
-						const meta = JSON.parse(img.post_meta ?? "{}") as { siteName?: string; url?: string };
+						const meta = JSON.parse(img.post_meta ?? "{}") as { platform?: string; siteName?: string; url?: string };
+						platform = meta.platform ?? "";
 						domain = meta.siteName ?? meta.url?.split("://")[1]?.split("/")[0] ?? "";
 					} catch {}
 					return domain ? (
 						<div className="absolute bottom-0 left-0 right-0 flex items-end px-2 pb-2 pt-8 bg-gradient-to-t from-black/40 to-transparent">
-							<span className="rounded-full bg-white/80 px-1.5 py-0.5 text-[10px] text-black font-medium max-w-full truncate">
-								{domain}
+							<span className="rounded-full bg-white/80 px-1.5 py-0.5 text-[10px] text-black font-medium max-w-full truncate flex items-center gap-1">
+								{platform === "twitter" ? <RiTwitterLine className="size-3 shrink-0" /> : null}
+								{platform !== "twitter" ? domain : null}
 							</span>
 						</div>
 					) : null;
