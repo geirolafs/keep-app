@@ -1,16 +1,18 @@
 {
-  "name": "mood",
+  "name": "keep",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "browser": "VITE_BROWSER=true vite --open",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",
+    "@fontsource-variable/geist": "^5.2.9",
     "@fontsource-variable/ibm-plex-sans": "^5.2.8",
     "@remixicon/react": "^4.9.0",
     "@tauri-apps/api": "^2",

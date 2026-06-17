@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 
+// 1×1 transparent GIF — valid image, no onError, zero visual footprint
+const BLANK_GIF =
+  "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+
 interface LazyImageProps {
   src: string;
   width?: number;
@@ -41,7 +45,7 @@ export function LazyImage({ src, width, height, alt = "", className, draggable =
   return (
     <img
       ref={ref}
-      src={inView ? src : "data:,"}
+      src={inView ? src : BLANK_GIF}
       width={width}
       height={height}
       alt={alt}

@@ -3,7 +3,7 @@ import { Toast } from "@base-ui/react/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastList } from "@/components/ui/toast-viewport";
 import { toastManager } from "@/lib/toast";
-import TopNav, { type Tab, type Sort } from "@/components/TopNav";
+import TopNav, { type Tab, type Sort, type TopNavHandle } from "@/components/TopNav";
 import Grid from "@/components/Grid";
 import { useCollections, CollectionsProvider } from "@/hooks/useCollections";
 import { TagsProvider } from "@/hooks/use-tags";
@@ -14,14 +14,12 @@ function AppContent() {
   const [searchQuery, setSearchQuery] = useState("");
   const [sort, setSort] = useState<Sort>("newest");
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const topNavRef = useRef<TopNavHandle>(null);
 
   const { createCollection } = useCollections();
 
-  const handleCreateCollection = () => {
-    const name = window.prompt("Collection name:");
-    if (name?.trim()) {
-      createCollection(name.trim());
-    }
+  const handleCreateCollection = (name: string) => {
+    if (name.trim()) createCollection(name.trim());
   };
 
   // Global keyboard shortcuts
@@ -35,7 +33,7 @@ function AppContent() {
       if ((e.metaKey || e.ctrlKey) && e.key === "n") {
         if (activeTab === "collections") {
           e.preventDefault();
-          handleCreateCollection();
+          topNavRef.current?.startNaming();
         }
       }
     };
@@ -47,6 +45,7 @@ function AppContent() {
     <TooltipProvider>
       <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
         <TopNav
+          ref={topNavRef}
           activeTab={activeTab}
           onTabChange={setActiveTab}
           searchQuery={searchQuery}
@@ -62,7 +61,7 @@ function AppContent() {
           searchQuery={searchQuery}
           selectedId={selectedId}
           onSelectId={setSelectedId}
-          onCreateCollection={handleCreateCollection}
+          onCreateCollection={() => topNavRef.current?.startNaming()}
         />
       </div>
       <ToastList />
