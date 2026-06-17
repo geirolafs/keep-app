@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { Toast } from "@base-ui/react/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastList } from "@/components/ui/toast-viewport";
@@ -9,6 +9,7 @@ import { CmdKDialog } from "@/components/CmdKDialog";
 import { useCollections, CollectionsProvider } from "@/hooks/useCollections";
 import { TagsProvider } from "@/hooks/use-tags";
 import { ImagesProvider } from "@/hooks/use-images";
+import { useSettings } from "@/hooks/use-settings";
 
 type ViewState = {
   activeTab: Tab;
@@ -55,6 +56,25 @@ function AppContent() {
   const topNavRef = useRef<TopNavHandle>(null);
   const gridRef = useRef<GridHandle>(null);
   const [cmdKOpen, setCmdKOpen] = useState(false);
+  const [numCols, setNumCols] = useState(4);
+  const [numColsManual, setNumColsManual] = useState(false);
+  const { getSetting, setSetting } = useSettings();
+
+  useEffect(() => {
+    getSetting("col_count").then((v) => {
+      if (v) { setNumCols(parseInt(v)); setNumColsManual(true); }
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleNumColsChange = (n: number) => {
+    setNumCols(n);
+    setNumColsManual(true);
+    setSetting("col_count", String(n));
+  };
+
+  const handleAutoNumCols = useCallback((n: number) => {
+    setNumCols(n);
+  }, []);
 
   const { createCollection } = useCollections();
 
@@ -104,6 +124,9 @@ function AppContent() {
           searchInputRef={searchInputRef}
           shuffleSeed={view.shuffleSeed}
           onShuffle={() => dispatch({ type: "shuffle" })}
+          numCols={numCols}
+          onNumColsChange={handleNumColsChange}
+          onAddFiles={() => gridRef.current?.openFilePicker()}
         />
         <Grid
           ref={gridRef}
@@ -114,6 +137,9 @@ function AppContent() {
           onSelectId={(id) => dispatch({ type: "setSelectedId", id })}
           onCreateCollection={() => topNavRef.current?.startNaming()}
           shuffleSeed={view.shuffleSeed}
+          numCols={numCols}
+          numColsManual={numColsManual}
+          onAutoNumCols={handleAutoNumCols}
         />
       </div>
       <CmdKDialog

@@ -139,3 +139,28 @@
     @apply font-sans;
     }
 }
+
+.col-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    #351302 0%,
+    #351302 var(--col-pct, 20%),
+    #e6e6e6 var(--col-pct, 20%),
+    #e6e6e6 100%
+  );
+  outline: none;
+  cursor: pointer;
+}
+.col-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  background: white;
+  box-shadow: 1px 1px 4px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+}

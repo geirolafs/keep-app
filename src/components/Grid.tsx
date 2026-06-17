@@ -18,7 +18,6 @@ import { Lightbox } from "@/components/Lightbox";
 import type { Sort, Tab } from "@/components/TopNav";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useImages } from "@/hooks/use-images";
-import { useSettings } from "@/hooks/use-settings";
 import { useTags } from "@/hooks/use-tags";
 import { useCollections } from "@/hooks/useCollections";
 import { cn } from "@/lib/utils";
@@ -135,6 +134,7 @@ function getExt(path: string) {
 
 export interface GridHandle {
 	openImage: (id: string) => void;
+	openFilePicker: () => void;
 }
 
 interface GridProps {
@@ -145,6 +145,9 @@ interface GridProps {
 	onSelectId?: (id: string | null) => void;
 	onCreateCollection?: () => void;
 	shuffleSeed?: number;
+	numCols?: number;
+	numColsManual?: boolean;
+	onAutoNumCols?: (n: number) => void;
 	ref?: Ref<GridHandle>;
 }
 
@@ -156,6 +159,9 @@ export default function Grid({
 	onSelectId,
 	onCreateCollection,
 	shuffleSeed = 0,
+	numCols = 4,
+	numColsManual = false,
+	onAutoNumCols,
 	ref,
 }: GridProps) {
 	const {
@@ -168,7 +174,6 @@ export default function Grid({
 		updateDescription,
 	} = useImages();
 	const { imageTagsMap, addTag, deleteTag, renameTag } = useTags();
-	const { getSetting, setSetting } = useSettings();
 	const {
 		collections,
 		getCollectionImageIds,
@@ -188,34 +193,22 @@ export default function Grid({
 		renaming,
 		renameValue,
 	} = gridUI;
-	useImperativeHandle(ref, () => ({
-		openImage: (id: string) => dispatch({ type: "setOpenId", id }),
-	}));
 	const renameInputRef = useRef<HTMLInputElement>(null);
 	const [visibleCount, setVisibleCount] = useState(50);
 	const sentinelRef = useRef<HTMLDivElement>(null);
-	const [numCols, setNumCols] = useState(4);
-	const manualColsRef = useRef(false);
 	const masonryRef = useRef<HTMLDivElement>(null);
-	useEffect(() => {
-		getSetting("col_count").then((v) => {
-			if (v) { setNumCols(parseInt(v)); manualColsRef.current = true; }
-		});
-	}, []); // eslint-disable-line react-hooks/exhaustive-deps
 	useEffect(() => {
 		const el = masonryRef.current;
 		if (!el) return;
 		const ro = new ResizeObserver(([entry]) => {
-			if (manualColsRef.current) return;
+			if (numColsManual) return;
 			const w = entry.contentRect.width;
-			if (w >= 1280) setNumCols(5);
-			else if (w >= 1024) setNumCols(4);
-			else if (w >= 640) setNumCols(3);
-			else setNumCols(2);
+			const n = w >= 1280 ? 5 : w >= 1024 ? 4 : w >= 640 ? 3 : 2;
+			onAutoNumCols?.(n);
 		});
 		ro.observe(el);
 		return () => ro.disconnect();
-	}, []);
+	}, [numColsManual, onAutoNumCols]);
 	const shuffleOrderRef = useRef<Map<string, number> | null>(null);
 	useEffect(() => {
 		if (shuffleSeed > 0) {
@@ -416,11 +409,10 @@ export default function Grid({
 		dispatch({ type: "clearBatchTagInput" });
 	};
 
-	const handleNumColsChange = (n: number) => {
-		setNumCols(n);
-		manualColsRef.current = true;
-		setSetting("col_count", String(n));
-	};
+	useImperativeHandle(ref, () => ({
+		openImage: (id: string) => dispatch({ type: "setOpenId", id }),
+		openFilePicker: handleFilePicker,
+	}));
 
 	const handleRenameCollection = (id: string, currentName: string) => {
 		dispatch({ type: "startRename", kind: "collection", id, currentName });
@@ -903,14 +895,13 @@ export default function Grid({
 		<div className="relative flex flex-1 overflow-hidden">
 			{/* main column */}
 			<div className="relative flex flex-1 flex-col overflow-hidden">
-				{/* toolbar */}
-				<div
-					data-tauri-drag-region
-					className="flex h-11 flex-shrink-0 items-center border-b border-border px-4 gap-2"
-				>
-					{/* Breadcrumb when drilling into a collection or tag */}
-					{(activeTab === "collections" || activeTab === "tags") &&
-						selectedId && (
+				{/* toolbar — only when breadcrumb or selection is active */}
+				{(((activeTab === "collections" || activeTab === "tags") && selectedId) || selectedIds.size > 0) && (
+					<div
+						data-tauri-drag-region
+						className="flex h-11 flex-shrink-0 items-center border-b border-border px-4 gap-2"
+					>
+						{(activeTab === "collections" || activeTab === "tags") && selectedId && (
 							<button
 								type="button"
 								onClick={() => onSelectId?.(null)}
@@ -920,82 +911,63 @@ export default function Grid({
 							</button>
 						)}
 
-					{/* Batch action toolbar */}
-					{selectedIds.size > 0 && (
-						<>
-							<span className="text-xs text-muted-foreground">
-								{selectedIds.size} selected
-							</span>
-							<button
-								type="button"
-								onClick={handleBatchDelete}
-								className="h-7 rounded-md border border-destructive/50 px-2.5 text-xs font-medium text-destructive hover:bg-destructive/10 transition-colors"
-							>
-								Delete all
-							</button>
-							<select
-								aria-label="Add to collection"
-								defaultValue=""
-								onChange={(e) => {
-									if (e.target.value) {
-										handleBatchAddToCollection(e.target.value);
-										e.target.value = "";
-									}
-								}}
-								className="h-7 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-							>
-								<option value="" disabled>
-									Add to collection…
-								</option>
-								{collections.map((c) => (
-									<option key={c.id} value={c.id}>
-										{c.name}
+						{selectedIds.size > 0 && (
+							<>
+								<span className="text-xs text-muted-foreground">
+									{selectedIds.size} selected
+								</span>
+								<button
+									type="button"
+									onClick={handleBatchDelete}
+									className="h-7 rounded-md border border-destructive/50 px-2.5 text-xs font-medium text-destructive hover:bg-destructive/10 transition-colors"
+								>
+									Delete all
+								</button>
+								<select
+									aria-label="Add to collection"
+									defaultValue=""
+									onChange={(e) => {
+										if (e.target.value) {
+											handleBatchAddToCollection(e.target.value);
+											e.target.value = "";
+										}
+									}}
+									className="h-7 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+								>
+									<option value="" disabled>
+										Add to collection…
 									</option>
-								))}
-							</select>
-							<input
-								aria-label="Batch tag"
-								value={batchTagInput}
-								onChange={(e) =>
-									dispatch({ type: "setBatchTagInput", value: e.target.value })
-								}
-								onKeyDown={(e) => {
-									if (e.key === "Enter") handleBatchTag(batchTagInput);
-								}}
-								placeholder="Add tag…"
-								className="h-7 w-28 rounded-md border border-input bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
-							/>
-							<button
-								type="button"
-								onClick={() => dispatch({ type: "clearSelection" })}
-								className="h-7 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-							>
-								Clear
-							</button>
-						</>
-					)}
+									{collections.map((c) => (
+										<option key={c.id} value={c.id}>
+											{c.name}
+										</option>
+									))}
+								</select>
+								<input
+									aria-label="Batch tag"
+									value={batchTagInput}
+									onChange={(e) =>
+										dispatch({ type: "setBatchTagInput", value: e.target.value })
+									}
+									onKeyDown={(e) => {
+										if (e.key === "Enter") handleBatchTag(batchTagInput);
+									}}
+									placeholder="Add tag…"
+									className="h-7 w-28 rounded-md border border-input bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+								/>
+								<button
+									type="button"
+									onClick={() => dispatch({ type: "clearSelection" })}
+									className="h-7 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+								>
+									Clear
+								</button>
+							</>
+						)}
 
-					<div className="flex-1" data-tauri-drag-region />
-					<div className="flex items-center gap-1.5">
-						<input
-							type="range"
-							min={2}
-							max={12}
-							value={numCols}
-							onChange={(e) => handleNumColsChange(parseInt(e.target.value))}
-							className="w-20 accent-foreground"
-							title={`${numCols} columns`}
-						/>
-						<span className="w-4 text-center text-xs text-muted-foreground">{numCols}</span>
+						<div className="flex-1" data-tauri-drag-region />
 					</div>
-					<button
-						type="button"
-						onClick={handleFilePicker}
-						className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 transition-opacity"
-					>
-						+ Add
-					</button>
-				</div>
+				)}
 
 				{renderContent()}
 

@@ -1,4 +1,4 @@
-import { RiSearchLine, RiSortAsc, RiSortDesc, RiSettings3Line, RiEyeLine, RiEyeOffLine, RiLoader4Line, RiSparkling2Line, RiQuestionLine } from "@remixicon/react";
+import { RiSearchLine, RiSortAsc, RiSortDesc, RiSettings3Line, RiEyeLine, RiEyeOffLine, RiLoader4Line, RiSparkling2Line, RiQuestionLine, RiAddLine } from "@remixicon/react";
 import { devSaveExample, devLoadExample, devResetAll, refreshThumbnails, backfillVision, useImages } from "@/hooks/use-images";
 import { useTags } from "@/hooks/use-tags";
 import { invoke } from "@tauri-apps/api/core";
@@ -36,6 +36,9 @@ interface TopNavProps {
 	searchInputRef?: RefObject<HTMLInputElement | null>;
 	shuffleSeed?: number;
 	onShuffle?: () => void;
+	numCols?: number;
+	onNumColsChange?: (n: number) => void;
+	onAddFiles?: () => void;
 	ref?: Ref<TopNavHandle>;
 }
 
@@ -110,6 +113,9 @@ function TopNav({
 	searchInputRef,
 	shuffleSeed = 0,
 	onShuffle,
+	numCols = 4,
+	onNumColsChange,
+	onAddFiles,
 	ref,
 }: TopNavProps) {
 	const [naming, setNaming] = useState(false);
@@ -249,22 +255,22 @@ function TopNav({
 		<>
 		<div
 			data-tauri-drag-region
-			className="flex h-12 flex-shrink-0 items-center border-b border-border bg-background pl-[120px] pr-4"
+			className="flex flex-shrink-0 items-center justify-between bg-background px-4 pt-[44px] pb-4"
 		>
 			{/* Logo */}
-			<span className="shrink-0 select-none text-2xl font-black uppercase leading-none text-foreground cap-trim">
+			<span className="shrink-0 select-none text-[44px] font-black uppercase leading-none tracking-[-0.065em] text-[#392115] cap-trim">
 				KEEP
 			</span>
 
 			{/* Tabs */}
-			<div className="flex items-center gap-12 ml-[188px]">
+			<div className="flex items-center gap-6">
 				{TABS.map((tab) => {
 					const isDisabled = tab.id === "bin" && binImages.length === 0;
 
 					if (isDisabled) {
 						return (
 							<Tooltip key={tab.id}>
-								<TooltipTrigger render={<span className="shrink-0 text-2xl font-bold uppercase leading-none cap-trim opacity-25 cursor-not-allowed text-muted-foreground" />}>
+								<TooltipTrigger render={<span className="shrink-0 text-3xl font-semibold leading-none cap-trim opacity-25 cursor-not-allowed" style={{ color: "#bfb7b1" }} />}>
 									{tab.label}
 								</TooltipTrigger>
 								<TooltipContent side="bottom">Bin is empty</TooltipContent>
@@ -280,12 +286,7 @@ function TopNav({
 								onTabChange(tab.id);
 								setNaming(false);
 							}}
-							className={[
-								"shrink-0 text-2xl font-bold uppercase leading-none transition-colors cap-trim",
-								activeTab === tab.id
-									? "text-foreground"
-									: "text-muted-foreground hover:text-foreground",
-							].join(" ")}
+							className={`shrink-0 text-3xl font-semibold leading-none transition-colors cap-trim ${activeTab === tab.id ? "text-[#392115]" : "text-[#bfb7b1] hover:text-[#392115]"}`}
 						>
 							{tab.label}
 						</button>
@@ -294,88 +295,112 @@ function TopNav({
 			</div>
 
 			{/* Right controls */}
-			<div className="ml-auto flex items-center gap-2 shrink-0">
-				{/* Search */}
-				<div className="relative">
-					<RiSearchLine className="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground pointer-events-none" />
+			<div className="flex items-center gap-3 shrink-0">
+				{/* Sort + col slider group */}
+				<div className="flex items-center gap-2">
+					<button
+						type="button"
+						onClick={() => onSortChange(sort === "newest" ? "oldest" : "newest")}
+						title={sort === "newest" ? "Newest first" : "Oldest first"}
+						className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+					>
+						{sort === "newest" ? (
+							<RiSortDesc className="size-4" />
+						) : (
+							<RiSortAsc className="size-4" />
+						)}
+					</button>
+					<span className="text-xs font-semibold tabular-nums" style={{ color: "#79716b" }}>{numCols}</span>
 					<input
-						aria-label="Search"
-						ref={searchInputRef}
-						value={searchQuery}
-						onChange={(e) => onSearchChange(e.target.value)}
-						placeholder="Search..."
-						className="h-7 w-48 rounded-full border border-input bg-input/30 pl-7 pr-10 py-1 text-xs transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+						type="range"
+						min={2}
+						max={12}
+						value={numCols}
+						onChange={(e) => onNumColsChange?.(parseInt(e.target.value))}
+						title={`${numCols} columns`}
+						className="col-slider w-20"
+						style={{ "--col-pct": `${((numCols - 2) / 10) * 100}%` } as React.CSSProperties}
 					/>
-					<kbd className={[
-						"absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none rounded border border-border px-1 py-0.5 font-mono text-[10px] text-muted-foreground transition-opacity",
-						searchQuery ? "opacity-0" : "opacity-100",
-					].join(" ")}>
-						⌘K
-					</kbd>
 				</div>
 
-				{/* Sort toggle */}
-				<button
-					type="button"
-					onClick={() => onSortChange(sort === "newest" ? "oldest" : "newest")}
-					title={sort === "newest" ? "Newest first" : "Oldest first"}
-					className="flex h-7 w-7 items-center justify-center rounded-md border border-input bg-background text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-				>
-					{sort === "newest" ? (
-						<RiSortDesc className="size-4" />
-					) : (
-						<RiSortAsc className="size-4" />
-					)}
-				</button>
+				{/* Utility icons group */}
+				<div className="flex items-center gap-1">
+					<button
+						type="button"
+						onClick={() => setHelpOpen(true)}
+						title="Help (?)"
+						className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+					>
+						<RiQuestionLine className="size-4" />
+					</button>
+					<button
+						type="button"
+						onClick={openSettings}
+						title="Settings"
+						className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+					>
+						<RiSettings3Line className="size-4" />
+					</button>
+				</div>
 
-				{/* Help */}
-				<button
-					type="button"
-					onClick={() => setHelpOpen(true)}
-					title="Help (?)"
-					className="flex h-7 w-7 items-center justify-center rounded-md border border-input bg-background text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-				>
-					<RiQuestionLine className="size-4" />
-				</button>
-
-				{/* Settings */}
-				<button
-					type="button"
-					onClick={openSettings}
-					title="Settings"
-					className="flex h-7 w-7 items-center justify-center rounded-md border border-input bg-background text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-				>
-					<RiSettings3Line className="size-4" />
-				</button>
-
-				{/* New collection (collections tab only) */}
-				{activeTab === "collections" &&
-					(naming ? (
+				{/* Search + add group */}
+				<div className="flex items-center gap-2">
+					<div className="relative">
+						<RiSearchLine className="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground pointer-events-none" />
 						<input
-							aria-label="Collection name"
-							ref={nameInputRef}
-							value={nameValue}
-							onChange={(e) => setNameValue(e.target.value)}
-							onKeyDown={(e) => {
-								if (e.key === "Enter") commitName();
-								if (e.key === "Escape") {
-									setNaming(false);
-									setNameValue("");
-								}
-							}}
-							onBlur={commitName}
-							placeholder="Collection name…"
-							className="h-7 w-40 rounded-md border border-ring bg-background px-2.5 text-xs outline-none focus:ring-1 focus:ring-ring"
+							aria-label="Search"
+							ref={searchInputRef}
+							value={searchQuery}
+							onChange={(e) => onSearchChange(e.target.value)}
+							placeholder="Search..."
+							className="h-7 w-48 rounded-full border border-input bg-input/30 pl-7 pr-10 py-1 text-xs transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
 						/>
-					) : (
-						<button
-							type="button"
-							onClick={startNaming}
-							className="h-7 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
-						>
-							+ Collection
-						</button>
-					))}
+						<kbd className={[
+							"absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none rounded border border-border px-1 py-0.5 font-mono text-[10px] text-muted-foreground transition-opacity",
+							searchQuery ? "opacity-0" : "opacity-100",
+						].join(" ")}>
+							⌘K
+						</kbd>
+					</div>
+
+					{/* New collection (collections tab only) */}
+					{activeTab === "collections" &&
+						(naming ? (
+							<input
+								aria-label="Collection name"
+								ref={nameInputRef}
+								value={nameValue}
+								onChange={(e) => setNameValue(e.target.value)}
+								onKeyDown={(e) => {
+									if (e.key === "Enter") commitName();
+									if (e.key === "Escape") {
+										setNaming(false);
+										setNameValue("");
+									}
+								}}
+								onBlur={commitName}
+								placeholder="Collection name…"
+								className="h-7 w-40 rounded-md border border-ring bg-background px-2.5 text-xs outline-none focus:ring-1 focus:ring-ring"
+							/>
+						) : (
+							<button
+								type="button"
+								onClick={startNaming}
+								className="h-7 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
+							>
+								+ Collection
+							</button>
+						))}
+
+					<button
+						type="button"
+						onClick={onAddFiles}
+						title="Add files"
+						className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+					>
+						<RiAddLine className="size-4" />
+					</button>
+				</div>
 			</div>
 		</div>
 
