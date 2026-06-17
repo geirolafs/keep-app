@@ -491,6 +491,7 @@ function useImagesState() {
           created_at: img.created_at,
           updated_at: img.updated_at ?? img.created_at,
           kind: img.kind ?? "image",
+          post_meta: img.post_meta ?? null,
         })),
         tags,
         image_tags: imageTags,
@@ -510,7 +511,7 @@ function useImagesState() {
     try {
       const result = await invoke<{ data_dir: string; snapshot_json: string }>("load_example_snapshot", { n });
       const snapshot = JSON.parse(result.snapshot_json) as {
-        images: Array<{ id: string; file_name: string; thumb_name: string; source_url: string | null; title: string | null; notes: string | null; description: string | null; dominant_color: string | null; palette: string | null; width: number; height: number; created_at: number; updated_at: number; kind?: string }>;
+        images: Array<{ id: string; file_name: string; thumb_name: string; source_url: string | null; title: string | null; notes: string | null; description: string | null; dominant_color: string | null; palette: string | null; width: number; height: number; created_at: number; updated_at: number; kind?: string; post_meta?: string | null }>;
         tags: Array<{ id: string; name: string }>;
         image_tags: Array<{ image_id: string; tag_id: string }>;
         collections: Array<{ id: string; name: string }>;
@@ -526,11 +527,11 @@ function useImagesState() {
 
       for (const img of snapshot.images) {
         await db.execute(
-          `INSERT INTO images (id, file_path, thumb_path, source_url, title, notes, description, dominant_color, palette, width, height, created_at, updated_at, kind)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+          `INSERT INTO images (id, file_path, thumb_path, source_url, title, notes, description, dominant_color, palette, width, height, created_at, updated_at, kind, post_meta)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
           [img.id, `${result.data_dir}/images/${img.file_name}`, `${result.data_dir}/${img.thumb_name === img.file_name ? "images" : "thumbs"}/${img.thumb_name}`,
            img.source_url, img.title, img.notes, img.description ?? null, img.dominant_color, img.palette,
-           img.width, img.height, img.created_at, img.updated_at, img.kind ?? "image"]
+           img.width, img.height, img.created_at, img.updated_at, img.kind ?? "image", img.post_meta ?? null]
         );
       }
       for (const tag of snapshot.tags) {
