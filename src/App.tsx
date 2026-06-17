@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef } from "react";
 import { Toast } from "@base-ui/react/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastList } from "@/components/ui/toast-viewport";
@@ -7,13 +7,46 @@ import TopNav, { type Tab, type Sort, type TopNavHandle } from "@/components/Top
 import Grid from "@/components/Grid";
 import { useCollections, CollectionsProvider } from "@/hooks/useCollections";
 import { TagsProvider } from "@/hooks/use-tags";
+import { ImagesProvider } from "@/hooks/use-images";
+
+type ViewState = {
+  activeTab: Tab;
+  selectedId: string | null;
+  searchQuery: string;
+  sort: Sort;
+  shuffleSeed: number;
+};
+
+type ViewAction =
+  | { type: "setTab"; tab: Tab }
+  | { type: "setSelectedId"; id: string | null }
+  | { type: "setSearchQuery"; query: string }
+  | { type: "setSort"; sort: Sort }
+  | { type: "shuffle" };
+
+function viewReducer(state: ViewState, action: ViewAction): ViewState {
+  switch (action.type) {
+    case "setTab":
+      return { ...state, activeTab: action.tab, selectedId: null };
+    case "setSelectedId":
+      return { ...state, selectedId: action.id };
+    case "setSearchQuery":
+      return { ...state, searchQuery: action.query };
+    case "setSort":
+      return { ...state, sort: action.sort };
+    case "shuffle":
+      return { ...state, shuffleSeed: state.shuffleSeed + 1 };
+  }
+}
 
 function AppContent() {
-  const [activeTab, setActiveTab] = useState<Tab>("all");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [sort, setSort] = useState<Sort>("newest");
-  const [shuffleSeed, setShuffleSeed] = useState(0);
+  const [view, dispatch] = useReducer(viewReducer, {
+    activeTab: "all",
+    selectedId: null,
+    searchQuery: "",
+    sort: "newest",
+    shuffleSeed: 0,
+  });
   const searchInputRef = useRef<HTMLInputElement>(null);
   const topNavRef = useRef<TopNavHandle>(null);
 
@@ -32,40 +65,44 @@ function AppContent() {
         searchInputRef.current?.select();
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "n") {
-        if (activeTab === "collections") {
+        if (view.activeTab === "collections") {
           e.preventDefault();
           topNavRef.current?.startNaming();
         }
       }
+      if (e.key === "?" && !e.metaKey && !e.ctrlKey && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement)) {
+        e.preventDefault();
+        topNavRef.current?.openHelp();
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [activeTab]);
+  }, [view.activeTab]);
 
   return (
     <TooltipProvider>
       <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
         <TopNav
           ref={topNavRef}
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
-          searchQuery={searchQuery}
-          onSearchChange={setSearchQuery}
-          sort={sort}
-          onSortChange={setSort}
+          activeTab={view.activeTab}
+          onTabChange={(tab) => dispatch({ type: "setTab", tab })}
+          searchQuery={view.searchQuery}
+          onSearchChange={(query) => dispatch({ type: "setSearchQuery", query })}
+          sort={view.sort}
+          onSortChange={(sort) => dispatch({ type: "setSort", sort })}
           onCreateCollection={handleCreateCollection}
           searchInputRef={searchInputRef}
-          shuffleSeed={shuffleSeed}
-          onShuffle={() => setShuffleSeed((s) => s + 1)}
+          shuffleSeed={view.shuffleSeed}
+          onShuffle={() => dispatch({ type: "shuffle" })}
         />
         <Grid
-          activeTab={activeTab}
-          sort={sort}
-          searchQuery={searchQuery}
-          selectedId={selectedId}
-          onSelectId={setSelectedId}
+          activeTab={view.activeTab}
+          sort={view.sort}
+          searchQuery={view.searchQuery}
+          selectedId={view.selectedId}
+          onSelectId={(id) => dispatch({ type: "setSelectedId", id })}
           onCreateCollection={() => topNavRef.current?.startNaming()}
-          shuffleSeed={shuffleSeed}
+          shuffleSeed={view.shuffleSeed}
         />
       </div>
       <ToastList />
@@ -75,12 +112,14 @@ function AppContent() {
 
 export default function App() {
   return (
-    <TagsProvider>
-      <CollectionsProvider>
-        <Toast.Provider toastManager={toastManager}>
-          <AppContent />
-        </Toast.Provider>
-      </CollectionsProvider>
-    </TagsProvider>
+    <ImagesProvider>
+      <TagsProvider>
+        <CollectionsProvider>
+          <Toast.Provider toastManager={toastManager}>
+            <AppContent />
+          </Toast.Provider>
+        </CollectionsProvider>
+      </TagsProvider>
+    </ImagesProvider>
   );
 }

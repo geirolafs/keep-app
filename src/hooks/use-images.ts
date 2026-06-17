@@ -1,4 +1,5 @@
-import { useEffect, useState, useCallback } from "react";
+import { createContext, createElement, use, useEffect, useState, useCallback } from "react";
+import type { ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import Database from "@tauri-apps/plugin-sql";
@@ -33,7 +34,7 @@ interface SavedImageResult {
 }
 
 async function getDb() {
-  return Database.load("sqlite:mood.db");
+  return Database.load("sqlite:keep.db");
 }
 
 export async function devResetAll() {
@@ -47,7 +48,7 @@ export async function devResetAll() {
     await invoke("reset_all_images");
     window.location.reload();
   } catch (err) {
-    console.error("[mood] resetAll failed:", err);
+    console.error("[keep] resetAll failed:", err);
   }
 }
 
@@ -71,7 +72,7 @@ export async function devSaveExample(n: number) {
     await invoke("save_example_snapshot", { n, snapshotJson: JSON.stringify(snapshot) });
     toastManager.add({ title: `Example ${n} saved (${imgs.length} images)`, type: "success", timeout: 3000 });
   } catch (err) {
-    console.error("[mood] saveExample failed:", err);
+    console.error("[keep] saveExample failed:", err);
     toastManager.add({ title: "Failed to save example", type: "error" });
   }
 }
@@ -104,7 +105,7 @@ export async function devLoadExample(n: number) {
     for (const ci of snapshot.collection_images) await db.execute("INSERT INTO collection_images (collection_id, image_id) VALUES ($1, $2)", [ci.collection_id, ci.image_id]);
     window.location.reload();
   } catch (err) {
-    console.error("[mood] loadExample failed:", err);
+    console.error("[keep] loadExample failed:", err);
     toastManager.add({ title: String(err), type: "error" });
   }
 }
@@ -128,12 +129,12 @@ export async function refreshThumbnails(
     toastManager.add({ title: `Refreshed ${count} thumbnail${count !== 1 ? "s" : ""}`, type: "success", timeout: 3000 });
     window.location.reload();
   } catch (err) {
-    console.error("[mood] refreshThumbnails failed:", err);
+    console.error("[keep] refreshThumbnails failed:", err);
     toastManager.add({ title: String(err), type: "error" });
   }
 }
 
-export function useImages() {
+function useImagesState() {
   const [images, setImages] = useState<Image[]>([]);
 
   const load = useCallback(async () => {
@@ -146,17 +147,17 @@ export function useImages() {
 
   const saveBlob = useCallback(async (blob: Blob) => {
     try {
-      console.log("[mood] paste detected", blob.type, blob.size);
+      console.log("[keep] paste detected", blob.type, blob.size);
       const ext = blob.type.split("/")[1] ?? "png";
       const buffer = await blob.arrayBuffer();
       const bytes = Array.from(new Uint8Array(buffer));
-      console.log("[mood] invoking save_image_bytes, bytes:", bytes.length);
+      console.log("[keep] invoking save_image_bytes, bytes:", bytes.length);
 
       const saved = await invoke<SavedImageResult>("save_image_bytes", {
         bytes,
         extension: ext,
       });
-      console.log("[mood] saved:", saved);
+      console.log("[keep] saved:", saved);
 
       const db = await getDb();
       await db.execute(
@@ -181,18 +182,18 @@ export function useImages() {
       ]);
       toastManager.add({ title: "Image saved", type: "success", timeout: 2500 });
     } catch (err) {
-      console.error("[mood] saveBlob failed:", err);
+      console.error("[keep] saveBlob failed:", err);
       toastManager.add({ title: "Failed to save image", type: "error" });
     }
   }, []);
 
   const savePath = useCallback(async (path: string) => {
     try {
-      console.log("[mood] savePath:", path);
+      console.log("[keep] savePath:", path);
       const saved = await invoke<SavedImageResult>("save_image_from_path", {
         path,
       });
-      console.log("[mood] savePath saved:", saved);
+      console.log("[keep] savePath saved:", saved);
 
       const db = await getDb();
       await db.execute(
@@ -217,18 +218,18 @@ export function useImages() {
       ]);
       toastManager.add({ title: saved.kind === "video" ? "Video saved" : "Image saved", type: "success", timeout: 2500 });
     } catch (err) {
-      console.error("[mood] savePath failed:", err);
+      console.error("[keep] savePath failed:", err);
       toastManager.add({ title: "Failed to save image", type: "error" });
     }
   }, []);
 
   const saveUrl = useCallback(async (url: string) => {
     try {
-      console.log("[mood] saveUrl:", url);
+      console.log("[keep] saveUrl:", url);
       const saved = await invoke<SavedImageResult>("save_image_from_url", {
         url,
       });
-      console.log("[mood] saveUrl saved:", saved);
+      console.log("[keep] saveUrl saved:", saved);
 
       const db = await getDb();
       await db.execute(
@@ -254,7 +255,7 @@ export function useImages() {
       ]);
       toastManager.add({ title: "Image saved", type: "success", timeout: 2500 });
     } catch (err) {
-      console.error("[mood] saveUrl failed:", err);
+      console.error("[keep] saveUrl failed:", err);
       toastManager.add({ title: "Failed to save image", type: "error" });
     }
   }, []);
@@ -267,7 +268,7 @@ export function useImages() {
       setImages((prev) => prev.filter((img) => img.id !== id));
       toastManager.add({ title: "Image deleted", type: "default", timeout: 2500 });
     } catch (err) {
-      console.error("[mood] deleteImage failed:", err);
+      console.error("[keep] deleteImage failed:", err);
       toastManager.add({ title: "Failed to delete image", type: "error" });
     }
   }, []);
@@ -284,7 +285,7 @@ export function useImages() {
         prev.map((img) => (img.id === id ? { ...img, title } : img))
       );
     } catch (err) {
-      console.error("[mood] updateTitle failed:", err);
+      console.error("[keep] updateTitle failed:", err);
     }
   }, []);
 
@@ -300,7 +301,7 @@ export function useImages() {
         prev.map((img) => (img.id === id ? { ...img, notes: notes || null } : img))
       );
     } catch (err) {
-      console.error("[mood] updateNotes failed:", err);
+      console.error("[keep] updateNotes failed:", err);
       toastManager.add({ title: "Failed to save note", type: "error" });
     }
   }, []);
@@ -317,7 +318,7 @@ export function useImages() {
         prev.map((img) => (img.id === id ? { ...img, description: description || null } : img))
       );
     } catch (err) {
-      console.error("[mood] updateDescription failed:", err);
+      console.error("[keep] updateDescription failed:", err);
     }
   }, []);
 
@@ -332,7 +333,7 @@ export function useImages() {
       await invoke("reset_all_images");
       window.location.reload();
     } catch (err) {
-      console.error("[mood] resetAll failed:", err);
+      console.error("[keep] resetAll failed:", err);
     }
   }, []);
 
@@ -371,7 +372,7 @@ export function useImages() {
       await invoke("save_example_snapshot", { n, snapshotJson: JSON.stringify(snapshot) });
       toastManager.add({ title: `Example ${n} saved (${imgs.length} images)`, type: "success", timeout: 3000 });
     } catch (err) {
-      console.error("[mood] saveExample failed:", err);
+      console.error("[keep] saveExample failed:", err);
       toastManager.add({ title: "Failed to save example", type: "error" });
     }
   }, []);
@@ -418,7 +419,7 @@ export function useImages() {
 
       window.location.reload();
     } catch (err) {
-      console.error("[mood] loadExample failed:", err);
+      console.error("[keep] loadExample failed:", err);
       toastManager.add({ title: String(err), type: "error" });
     }
   }, []);
@@ -426,7 +427,7 @@ export function useImages() {
   // paste listener
   useEffect(() => {
     const handler = (e: ClipboardEvent) => {
-      console.log("[mood] paste event fired");
+      console.log("[keep] paste event fired");
       const items = e.clipboardData?.items;
       if (!items) return;
 
@@ -474,10 +475,24 @@ export function useImages() {
     loadExample,
     imgSrc: (path: string) => {
       if (path.startsWith("http://") || path.startsWith("https://")) {
-        console.error("[mood] imgSrc received a raw http URL — file_path must be a local path:", path);
+        console.error("[keep] imgSrc received a raw http URL — file_path must be a local path:", path);
         return path;
       }
       return convertFileSrc(path);
     },
   };
+}
+
+type ImagesState = ReturnType<typeof useImagesState>;
+const ImagesContext = createContext<ImagesState | null>(null);
+
+export function ImagesProvider({ children }: { children: ReactNode }) {
+  const value = useImagesState();
+  return createElement(ImagesContext.Provider, { value }, children);
+}
+
+export function useImages(): ImagesState {
+  const ctx = use(ImagesContext);
+  if (!ctx) throw new Error("useImages must be used inside <ImagesProvider>");
+  return ctx;
 }

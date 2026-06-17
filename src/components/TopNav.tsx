@@ -1,9 +1,13 @@
-import { RiSearchLine, RiSortAsc, RiSortDesc, RiSettings3Line, RiEyeLine, RiEyeOffLine, RiLoader4Line } from "@remixicon/react";
-import { devSaveExample, devLoadExample, devResetAll, refreshThumbnails } from "@/hooks/use-images";
+import { RiSearchLine, RiSortAsc, RiSortDesc, RiSettings3Line, RiEyeLine, RiEyeOffLine, RiLoader4Line, RiSparkling2Line, RiQuestionLine } from "@remixicon/react";
+import { devSaveExample, devLoadExample, devResetAll, refreshThumbnails, useImages } from "@/hooks/use-images";
+import { useTags } from "@/hooks/use-tags";
+import { invoke } from "@tauri-apps/api/core";
+import { toastManager } from "@/lib/toast";
 import {
-	forwardRef,
+	type Ref,
 	type RefObject,
 	useImperativeHandle,
+	useReducer,
 	useRef,
 	useState,
 } from "react";
@@ -16,6 +20,7 @@ export type Sort = "newest" | "oldest";
 
 export interface TopNavHandle {
 	startNaming: () => void;
+	openHelp: () => void;
 }
 
 interface TopNavProps {
@@ -29,6 +34,46 @@ interface TopNavProps {
 	searchInputRef?: RefObject<HTMLInputElement | null>;
 	shuffleSeed?: number;
 	onShuffle?: () => void;
+	ref?: Ref<TopNavHandle>;
+}
+
+type SettingsState = {
+	open: boolean;
+	apiKey: string;
+	showApiKey: boolean;
+	analyzeMode: AnalyzeMode;
+	model: string;
+	refreshProgress: { done: number; total: number } | null;
+	analyzeProgress: { done: number; total: number } | null;
+	resetConfirm: boolean;
+};
+
+type SettingsAction =
+	| { type: "open"; apiKey: string; analyzeMode: AnalyzeMode; model: string }
+	| { type: "close" }
+	| { type: "setApiKey"; value: string }
+	| { type: "toggleShowApiKey" }
+	| { type: "setAnalyzeMode"; mode: AnalyzeMode }
+	| { type: "setModel"; value: string }
+	| { type: "setRefreshProgress"; progress: { done: number; total: number } | null }
+	| { type: "setAnalyzeProgress"; progress: { done: number; total: number } | null }
+	| { type: "startResetConfirm" }
+	| { type: "cancelResetConfirm" };
+
+function settingsReducer(state: SettingsState, action: SettingsAction): SettingsState {
+	switch (action.type) {
+		case "open":
+			return { ...state, open: true, apiKey: action.apiKey, analyzeMode: action.analyzeMode, model: action.model, showApiKey: false, resetConfirm: false };
+		case "close": return { ...state, open: false };
+		case "setApiKey": return { ...state, apiKey: action.value };
+		case "toggleShowApiKey": return { ...state, showApiKey: !state.showApiKey };
+		case "setAnalyzeMode": return { ...state, analyzeMode: action.mode };
+		case "setModel": return { ...state, model: action.value };
+		case "setRefreshProgress": return { ...state, refreshProgress: action.progress };
+		case "setAnalyzeProgress": return { ...state, analyzeProgress: action.progress };
+		case "startResetConfirm": return { ...state, resetConfirm: true };
+		case "cancelResetConfirm": return { ...state, resetConfirm: false };
+	}
 }
 
 const TABS: { id: Tab; label: string }[] = [
@@ -37,34 +82,49 @@ const TABS: { id: Tab; label: string }[] = [
 	{ id: "tags", label: "Tags" },
 ];
 
-const TopNav = forwardRef<TopNavHandle, TopNavProps>(function TopNav(
-	{
-		activeTab,
-		onTabChange,
-		searchQuery,
-		onSearchChange,
-		sort,
-		onSortChange,
-		onCreateCollection,
-		searchInputRef,
-		shuffleSeed = 0,
-		onShuffle,
-	}: TopNavProps,
-	ref: React.Ref<TopNavHandle>,
-) {
+const SHORTCUTS: [string, string][] = [
+	["⌘F", "Focus search"],
+	["← →", "Navigate lightbox"],
+	["Esc", "Close / cancel"],
+	["Del", "Delete selected"],
+	["⌘+click", "Multi-select"],
+	["Shift+click", "Range select"],
+	["?", "This help"],
+];
+
+function TopNav({
+	activeTab,
+	onTabChange,
+	searchQuery,
+	onSearchChange,
+	sort,
+	onSortChange,
+	onCreateCollection,
+	searchInputRef,
+	shuffleSeed = 0,
+	onShuffle,
+	ref,
+}: TopNavProps) {
 	const [naming, setNaming] = useState(false);
 	const [nameValue, setNameValue] = useState("");
+	const [helpOpen, setHelpOpen] = useState(false);
 	const nameInputRef = useRef<HTMLInputElement>(null);
-	const [settingsOpen, setSettingsOpen] = useState(false);
-	const [apiKeyValue, setApiKeyValue] = useState("");
-	const [showApiKey, setShowApiKey] = useState(false);
-	const [analyzeMode, setAnalyzeMode] = useState<AnalyzeMode>("manual");
-	const [modelValue, setModelValue] = useState("anthropic/claude-sonnet-4-6");
-	const [refreshProgress, setRefreshProgress] = useState<{ done: number; total: number } | null>(null);
-	const [resetConfirm, setResetConfirm] = useState(false);
+	const analyzeCancelRef = useRef(false);
+	const [settings, settingsDispatch] = useReducer(settingsReducer, {
+		open: false,
+		apiKey: "",
+		showApiKey: false,
+		analyzeMode: "manual",
+		model: "anthropic/claude-sonnet-4-6",
+		refreshProgress: null,
+		analyzeProgress: null,
+		resetConfirm: false,
+	});
 	const { getSetting, setSetting } = useSettings();
+	const { images: allImages, updateTitle, updateDescription } = useImages();
+	const { imageTagsMap, addTag, removeTag } = useTags();
 
-	useImperativeHandle(ref, () => ({ startNaming }));
+	useImperativeHandle(ref, () => ({ startNaming, openHelp: () => setHelpOpen(true) }));
 
 	const commitName = () => {
 		const trimmed = nameValue.trim();
@@ -80,27 +140,75 @@ const TopNav = forwardRef<TopNavHandle, TopNavProps>(function TopNav(
 	};
 
 	const openSettings = async () => {
-		const key = await getSetting("api_key");
-		const mode = await getSetting("analyze_mode") as AnalyzeMode | null;
-		const model = await getSetting("model");
-		setApiKeyValue(key ?? "");
-		setAnalyzeMode(mode ?? "manual");
-		setModelValue(model ?? "anthropic/claude-sonnet-4-6");
-		setShowApiKey(false);
-		setResetConfirm(false);
-		setSettingsOpen(true);
+		const [key, mode, model] = await Promise.all([
+			getSetting("api_key"),
+			getSetting("analyze_mode"),
+			getSetting("model"),
+		]);
+		settingsDispatch({ type: "open", apiKey: key ?? "", analyzeMode: (mode as AnalyzeMode | null) ?? "manual", model: model ?? "anthropic/claude-sonnet-4-6" });
 	};
 
 	const handleRefreshThumbnails = async () => {
-		await refreshThumbnails((done, total) => setRefreshProgress({ done, total }));
-		setRefreshProgress(null);
+		await refreshThumbnails((done, total) => settingsDispatch({ type: "setRefreshProgress", progress: { done, total } }));
+		settingsDispatch({ type: "setRefreshProgress", progress: null });
+	};
+
+	const handleAnalyzeAll = async () => {
+		if (settings.analyzeProgress) {
+			analyzeCancelRef.current = true;
+			return;
+		}
+		const apiKey = await getSetting("api_key");
+		if (!apiKey) {
+			toastManager.add({ title: "Add your OpenRouter API key in Settings", type: "error" });
+			return;
+		}
+		const model = (await getSetting("model")) ?? "anthropic/claude-sonnet-4-6";
+		analyzeCancelRef.current = false;
+		settingsDispatch({ type: "setAnalyzeProgress", progress: { done: 0, total: allImages.length } });
+
+		for (let i = 0; i < allImages.length; i++) {
+			if (analyzeCancelRef.current) break;
+			const img = allImages[i];
+			if (img.kind === "video") {
+				settingsDispatch({ type: "setAnalyzeProgress", progress: { done: i + 1, total: allImages.length } });
+				continue;
+			}
+			try {
+				const result = await invoke<{ title: string; tags: string[]; description: string } | null>("analyze_image", {
+					thumbPath: img.thumb_path,
+					apiKey,
+					model,
+				});
+				if (result && !analyzeCancelRef.current) {
+					await Promise.all([
+						updateTitle(img.id, result.title),
+						updateDescription(img.id, result.description),
+						(async () => {
+							await Promise.all((imageTagsMap.get(img.id) ?? []).map((tag) => removeTag(img.id, tag.id)));
+							await Promise.all(result.tags.map((tag) => addTag(img.id, tag)));
+						})(),
+					]);
+				}
+			} catch (err) {
+				console.error(`[keep] batch analyze failed for ${img.id}:`, err);
+			}
+			settingsDispatch({ type: "setAnalyzeProgress", progress: { done: i + 1, total: allImages.length } });
+		}
+
+		settingsDispatch({ type: "setAnalyzeProgress", progress: null });
+		if (!analyzeCancelRef.current) {
+			toastManager.add({ title: "Analysis complete", type: "success", timeout: 3000 });
+		}
 	};
 
 	const saveSettings = async () => {
-		await setSetting("api_key", apiKeyValue);
-		await setSetting("analyze_mode", analyzeMode);
-		await setSetting("model", modelValue);
-		setSettingsOpen(false);
+		await Promise.all([
+			setSetting("api_key", settings.apiKey),
+			setSetting("analyze_mode", settings.analyzeMode),
+			setSetting("model", settings.model),
+		]);
+		settingsDispatch({ type: "close" });
 	};
 
 	return (
@@ -114,7 +222,7 @@ const TopNav = forwardRef<TopNavHandle, TopNavProps>(function TopNav(
 				KEEP
 			</span>
 
-			{/* Tabs — left-aligned, 188px after logo */}
+			{/* Tabs */}
 			<div className="flex items-center gap-12 ml-[188px]">
 				{TABS.map((tab) => (
 					<button
@@ -142,6 +250,7 @@ const TopNav = forwardRef<TopNavHandle, TopNavProps>(function TopNav(
 				<div className="relative">
 					<RiSearchLine className="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground pointer-events-none" />
 					<input
+						aria-label="Search"
 						ref={searchInputRef}
 						value={searchQuery}
 						onChange={(e) => onSearchChange(e.target.value)}
@@ -164,6 +273,16 @@ const TopNav = forwardRef<TopNavHandle, TopNavProps>(function TopNav(
 					)}
 				</button>
 
+				{/* Help */}
+				<button
+					type="button"
+					onClick={() => setHelpOpen(true)}
+					title="Help (?)"
+					className="flex h-7 w-7 items-center justify-center rounded-md border border-input bg-background text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+				>
+					<RiQuestionLine className="size-4" />
+				</button>
+
 				{/* Settings */}
 				<button
 					type="button"
@@ -178,6 +297,7 @@ const TopNav = forwardRef<TopNavHandle, TopNavProps>(function TopNav(
 				{activeTab === "collections" &&
 					(naming ? (
 						<input
+							aria-label="Collection name"
 							ref={nameInputRef}
 							value={nameValue}
 							onChange={(e) => setNameValue(e.target.value)}
@@ -205,7 +325,7 @@ const TopNav = forwardRef<TopNavHandle, TopNavProps>(function TopNav(
 		</div>
 
 		{/* Settings Modal */}
-		<AlertDialog.Root open={settingsOpen} onOpenChange={setSettingsOpen}>
+		<AlertDialog.Root open={settings.open} onOpenChange={(open) => { if (!open) settingsDispatch({ type: "close" }); }}>
 			<AlertDialog.Portal>
 				<AlertDialog.Backdrop className="fixed inset-0 z-40 bg-black/50" />
 				<AlertDialog.Viewport className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -215,43 +335,62 @@ const TopNav = forwardRef<TopNavHandle, TopNavProps>(function TopNav(
 						<div className="mt-4 space-y-4">
 							{/* API Key */}
 							<div>
-								<label className="mb-1.5 block text-sm font-medium">OpenRouter API Key</label>
+								<label htmlFor="setting-api-key" className="mb-1.5 block text-sm font-medium">OpenRouter API Key</label>
 								<div className="relative">
 									<input
-										type={showApiKey ? "text" : "password"}
-										value={apiKeyValue}
-										onChange={(e) => setApiKeyValue(e.target.value)}
+										id="setting-api-key"
+										type={settings.showApiKey ? "text" : "password"}
+										value={settings.apiKey}
+										onChange={(e) => settingsDispatch({ type: "setApiKey", value: e.target.value })}
 										placeholder="sk-or-..."
 										className="h-9 w-full rounded-md border border-input bg-background px-3 pr-9 text-sm outline-none focus:ring-1 focus:ring-ring"
 									/>
 									<button
 										type="button"
-										onClick={() => setShowApiKey((v) => !v)}
+										onClick={() => settingsDispatch({ type: "toggleShowApiKey" })}
 										className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
 									>
-										{showApiKey ? <RiEyeOffLine className="size-4" /> : <RiEyeLine className="size-4" />}
+										{settings.showApiKey ? <RiEyeOffLine className="size-4" /> : <RiEyeLine className="size-4" />}
 									</button>
 								</div>
 							</div>
 
 							{/* Model */}
 							<div>
-								<label className="mb-1.5 block text-sm font-medium">Model</label>
+								<label htmlFor="setting-model" className="mb-1.5 block text-sm font-medium">Model</label>
 								<input
+									id="setting-model"
 									type="text"
-									value={modelValue}
-									onChange={(e) => setModelValue(e.target.value)}
+									value={settings.model}
+									onChange={(e) => settingsDispatch({ type: "setModel", value: e.target.value })}
 									placeholder="anthropic/claude-sonnet-4-6"
 									className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-1 focus:ring-ring"
 								/>
 							</div>
 
+							{/* Analyze All */}
+							<div>
+								<Button
+									variant={settings.analyzeProgress ? "destructive" : "outline"}
+									size="sm"
+									className="w-full"
+									onClick={handleAnalyzeAll}
+								>
+									{settings.analyzeProgress ? (
+										<><RiLoader4Line className="mr-1.5 size-3.5 animate-spin" />{settings.analyzeProgress.done}/{settings.analyzeProgress.total} — Cancel</>
+									) : (
+										<><RiSparkling2Line className="mr-1.5 size-3.5" />Analyze All</>
+									)}
+								</Button>
+							</div>
+
 							{/* Analyze Mode */}
 							<div>
-								<label className="mb-1.5 block text-sm font-medium">Auto-analyze on open</label>
+								<label htmlFor="setting-analyze-mode" className="mb-1.5 block text-sm font-medium">Auto-analyze on open</label>
 								<select
-									value={analyzeMode}
-									onChange={(e) => setAnalyzeMode(e.target.value as AnalyzeMode)}
+									id="setting-analyze-mode"
+									value={settings.analyzeMode}
+									onChange={(e) => settingsDispatch({ type: "setAnalyzeMode", mode: e.target.value as AnalyzeMode })}
 									className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-1 focus:ring-ring"
 								>
 									<option value="manual">Off</option>
@@ -264,17 +403,17 @@ const TopNav = forwardRef<TopNavHandle, TopNavProps>(function TopNav(
 						{/* Dev tools */}
 						{import.meta.env.DEV && (
 							<div className="mt-4 border-t border-border/50 pt-4">
-								<label className="mb-2 block text-sm font-medium text-muted-foreground">Developer</label>
+								<p className="mb-2 text-sm font-medium text-muted-foreground">Developer</p>
 								<div className="flex gap-2 mb-2">
 									<Button variant="outline" size="sm" className="flex-1" onClick={() => devSaveExample(1)}>Save E1</Button>
 									<Button variant="outline" size="sm" className="flex-1" onClick={() => devLoadExample(1)}>Load E1</Button>
-									{resetConfirm ? (
+									{settings.resetConfirm ? (
 										<>
-											<Button variant="destructive" size="sm" className="flex-1" onClick={() => { setResetConfirm(false); devResetAll(); }}>Confirm</Button>
-											<Button variant="outline" size="sm" onClick={() => setResetConfirm(false)}>Cancel</Button>
+											<Button variant="destructive" size="sm" className="flex-1" onClick={() => { settingsDispatch({ type: "cancelResetConfirm" }); devResetAll(); }}>Confirm</Button>
+											<Button variant="outline" size="sm" onClick={() => settingsDispatch({ type: "cancelResetConfirm" })}>Cancel</Button>
 										</>
 									) : (
-										<Button variant="outline" size="sm" className="flex-1 text-destructive border-destructive/50 hover:bg-destructive/10" onClick={() => setResetConfirm(true)}>Reset</Button>
+										<Button variant="outline" size="sm" className="flex-1 text-destructive border-destructive/50 hover:bg-destructive/10" onClick={() => settingsDispatch({ type: "startResetConfirm" })}>Reset</Button>
 									)}
 								</div>
 								<div className="flex gap-2">
@@ -285,11 +424,11 @@ const TopNav = forwardRef<TopNavHandle, TopNavProps>(function TopNav(
 										variant="outline"
 										size="sm"
 										className="flex-1"
-										disabled={!!refreshProgress}
+										disabled={!!settings.refreshProgress}
 										onClick={handleRefreshThumbnails}
 									>
-										{refreshProgress
-											? <><RiLoader4Line className="mr-1.5 size-3.5 animate-spin" />{refreshProgress.done} of {refreshProgress.total}</>
+										{settings.refreshProgress
+											? <><RiLoader4Line className="mr-1.5 size-3.5 animate-spin" />{settings.refreshProgress.done} of {settings.refreshProgress.total}</>
 											: "Refresh Thumbs"}
 									</Button>
 								</div>
@@ -308,8 +447,39 @@ const TopNav = forwardRef<TopNavHandle, TopNavProps>(function TopNav(
 				</AlertDialog.Viewport>
 			</AlertDialog.Portal>
 		</AlertDialog.Root>
+
+		{/* Help Modal */}
+		<AlertDialog.Root open={helpOpen} onOpenChange={setHelpOpen}>
+			<AlertDialog.Portal>
+				<AlertDialog.Backdrop className="fixed inset-0 z-40 bg-black/50" />
+				<AlertDialog.Viewport className="fixed inset-0 z-50 flex items-center justify-center p-4">
+					<AlertDialog.Popup className="w-full max-w-xs rounded-xl border border-border bg-background p-5 shadow-xl">
+						<AlertDialog.Title className="text-base font-semibold">Keyboard Shortcuts</AlertDialog.Title>
+						<div className="mt-3 space-y-2">
+							{SHORTCUTS.map(([key, desc]) => (
+								<div key={key} className="flex items-center justify-between gap-4">
+									<kbd className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground shrink-0">{key}</kbd>
+									<span className="text-sm text-muted-foreground">{desc}</span>
+								</div>
+							))}
+						</div>
+						<p className="mt-4 text-xs font-semibold text-muted-foreground uppercase tracking-wide">Tips</p>
+						<ul className="mt-1.5 space-y-1 text-xs text-muted-foreground list-disc list-inside">
+							<li>Drag & drop files onto the window</li>
+							<li>Paste a URL or image from clipboard</li>
+							<li>⌘+click to multi-select, then bulk delete / tag / collect</li>
+						</ul>
+						<div className="mt-5 flex justify-end">
+							<AlertDialog.Close render={<Button size="sm" />}>
+								Close
+							</AlertDialog.Close>
+						</div>
+					</AlertDialog.Popup>
+				</AlertDialog.Viewport>
+			</AlertDialog.Portal>
+		</AlertDialog.Root>
 		</>
 	);
-});
+}
 
 export default TopNav;

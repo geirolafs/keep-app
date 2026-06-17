@@ -20,9 +20,14 @@ Phase 7 shipped so far:
 - [x] **Reveal in Finder** — `revealItemInDir` button in lightbox date/source row
 - [x] **Dev tools → Settings modal** — Save E1, Load E1, Reset (2-step confirm), Randomize Order, Refresh Thumbs all in Settings Developer section; toolbar cleaned up
 - [x] **Grid polish** — removed rounded corners; removed focus outline on cards; `block` on img/video eliminates inline baseline gap
+- [x] **Hover scale** — `scale(1.02)` on card hover (`transition: transform 150ms ease`); gradient overlay removed
+- [x] **Video slow-mo in grid** — `playbackRate = 0.25` on hover, reset to `1` on leave
+- [x] **Column count slider** — range input 2–12 in Grid toolbar; persisted to `settings` (`col_count`); `ResizeObserver` auto-fires when no manual pref
+- [x] **Analyze All → Settings** — button + inline progress in Settings modal AI section; `RiSparkling2Line` icon; `useImages` converted to React Context (`ImagesProvider`) so TopNav shares image state
+- [x] **Help modal** — `?` button in TopNav + `?` keypress (guards inputs); AlertDialog with shortcuts table + tips; `openHelp()` on `TopNavHandle`
 
 Phase 7 remaining — see PLAN.md:
-- [ ] **Grid column slider** — 2–12 columns, persisted to settings (note: masonry now uses flex columns, not CSS `column-count`)
+- [ ] **Export original** — "Export Original" (Save As) + "Copy" (clipboard) in lightbox
 - [ ] **⌘K search dialog** — centered overlay, live results, keyboard nav
 - [ ] Bin / soft delete — schema migration v5 (`deleted_at`), Bin tab, auto-purge 90d, macOS Trash
 - [ ] Generate prompt button — `google/gemini-2.0-flash-exp`, one-click copy
@@ -58,7 +63,7 @@ Phase 9 — Canvas/Spaces — custom SVG infinite canvas, `boards` + `board_item
 - **UUIDv7 primary keys** — time-sortable, cloud-sync safe if we add sync later
 - **`synced_at` column on all tables** — `NULL` = dirty; future sync queue is just `WHERE synced_at IS NULL`
 - **App name: KEEP** — bundle ID `is.geir.keep`, macOS only (was MOOD / `is.geir.mood`)
-- **Tags + Collections as React Context** — `TagsProvider` + `CollectionsProvider` mounted in App.tsx; mutations propagate instantly across Grid and Lightbox
+- **Images + Tags + Collections as React Context** — `ImagesProvider` + `TagsProvider` + `CollectionsProvider` mounted in App.tsx; mutations propagate instantly across Grid, TopNav, and Lightbox
 - **Lightbox uses `openId` not `openIndex`** — stable identity survives filter/sort changes; index derived via `findIndex` on render
 - **GIF thumb = file_path** — original GIF used as thumb_path so animation is preserved in grid + lightbox; frame 0 must be decoded separately for AI analysis
 - **SVG thumb = file_path** — SVG served as own thumbnail; WKWebView renders natively; checkerboard bg (white in grid, pattern in lightbox)
@@ -104,7 +109,7 @@ src-tauri/src/lib.rs        — ALL Rust commands:
 src-tauri/Cargo.toml        — image crate (png/jpeg/gif/webp/bmp/tiff/avif-native), jxl-oxide, libheif-rs, color-thief, reqwest, base64
 ```
 
-**State flow:** `useImages` owns the images array (local useState). Tags/Collections are React Context (TagsProvider, CollectionsProvider in App.tsx). Mutations call SQLite directly via `tauri-plugin-sql`, then update local state — no server round-trip after the initial load.
+**State flow:** Images/Tags/Collections are all React Context (`ImagesProvider`, `TagsProvider`, `CollectionsProvider` in App.tsx). Mutations call SQLite directly via `tauri-plugin-sql`, then update shared context state — no server round-trip after the initial load.
 
 **Key patterns:**
 - `imgSrc(path)` — always wrap file paths with this; calls `convertFileSrc` for Tauri asset protocol
