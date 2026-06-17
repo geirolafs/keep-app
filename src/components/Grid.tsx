@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ContextMenu } from "@base-ui/react/context-menu";
@@ -6,6 +7,9 @@ import {
   RiImageAddLine,
   RiAlbumLine,
   RiPriceTag2Line,
+  RiUploadLine,
+  RiClipboardLine,
+  RiFolderOpenLine,
 } from "@remixicon/react";
 import { useImages } from "@/hooks/use-images";
 import { useTags } from "@/hooks/use-tags";
@@ -14,9 +18,11 @@ import { Lightbox } from "@/components/Lightbox";
 import { LazyImage } from "@/components/LazyImage";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
+import { useSettings } from "@/hooks/use-settings";
+import { toastManager } from "@/lib/toast";
 import type { Tab, Sort } from "@/components/TopNav";
 
-const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp"]);
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "tiff", "tif", "svg", "jxl", "heic", "heif"]);
 
 function getExt(path: string) {
   return path.split(".").pop()?.toLowerCase() ?? "";
@@ -39,19 +45,29 @@ export default function Grid({
   onSelectId,
   onCreateCollection,
 }: GridProps) {
-  const { images: allImages, imgSrc, savePath, deleteImage, updateTitle, updateNotes, resetAll } = useImages();
-  const { imageTagsMap, addTag, deleteTag, renameTag } = useTags();
+  const { images: allImages, imgSrc, savePath, deleteImage, updateTitle, updateNotes, updateDescription, resetAll, saveExample, loadExample } = useImages();
+  const { imageTagsMap, addTag, removeTag, deleteTag, renameTag } = useTags();
+  const { getSetting } = useSettings();
   const { collections, getCollectionImageIds, getCollectionCover, deleteCollection, renameCollection, addToCollection } = useCollections();
 
   const [isDragging, setIsDragging] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [confirmDelete, setConfirmDelete] = useState<{
-    type: "collection" | "tag";
-    id: string;
-    name: string;
-  } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<
+    | { type: "collection"; id: string; name: string }
+    | { type: "tag"; id: string; name: string }
+    | { type: "batch"; count: number }
+    | { type: "reset" }
+    | null
+  >(null);
   const [batchTagInput, setBatchTagInput] = useState("");
+  const [renaming, setRenaming] = useState<{ type: "collection" | "tag"; id: string } | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
+  const [analyzeProgress, setAnalyzeProgress] = useState<{ done: number; total: number } | null>(null);
+  const analyzeCancelRef = useRef(false);
+  const [visibleCount, setVisibleCount] = useState(50);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
   // Compute filtered + sorted images
   const filteredImages = (() => {
@@ -73,6 +89,7 @@ export default function Grid({
         (img) =>
           img.title?.toLowerCase().includes(q) ||
           img.source_url?.toLowerCase().includes(q) ||
+          img.description?.toLowerCase().includes(q) ||
           (imageTagsMap.get(img.id) ?? []).some((t) =>
             t.name.toLowerCase().includes(q)
           )
@@ -95,9 +112,27 @@ export default function Grid({
     setSelectedIds(new Set());
   }, [activeTab]);
 
+  // Reset visible count when filters change
+  useEffect(() => {
+    setVisibleCount(50);
+  }, [activeTab, searchQuery, sort, selectedId]);
+
+  // Sentinel: load more DOM nodes as user scrolls
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || visibleCount >= filteredImages.length) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) setVisibleCount((n) => n + 50); },
+      { rootMargin: "300px" }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [visibleCount, filteredImages.length]);
+
   // Tauri drag-drop listener
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let mounted = true;
 
     getCurrentWebviewWindow()
       .onDragDropEvent((event) => {
@@ -119,10 +154,15 @@ export default function Grid({
         }
       })
       .then((fn) => {
-        unlisten = fn;
+        if (mounted) {
+          unlisten = fn;
+        } else {
+          fn(); // cleanup already ran — tear down immediately
+        }
       });
 
     return () => {
+      mounted = false;
       unlisten?.();
     };
   }, [savePath]);
@@ -131,7 +171,7 @@ export default function Grid({
     const result = await openDialog({
       multiple: true,
       filters: [
-        { name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp"] },
+        { name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "tiff", "tif", "svg", "jxl", "heic", "heif"] },
       ],
     });
     if (!result) return;
@@ -162,9 +202,12 @@ export default function Grid({
     });
   };
 
-  const handleBatchDelete = useCallback(async () => {
+  const handleBatchDelete = useCallback(() => {
     if (selectedIds.size === 0) return;
-    if (!confirm(`Delete ${selectedIds.size} image${selectedIds.size !== 1 ? "s" : ""}?`)) return;
+    setConfirmDelete({ type: "batch", count: selectedIds.size });
+  }, [selectedIds]);
+
+  const doBatchDelete = useCallback(async () => {
     for (const id of selectedIds) {
       const img = allImages.find((i) => i.id === id);
       if (img) await deleteImage(id, img.file_path, img.thumb_path);
@@ -186,24 +229,89 @@ export default function Grid({
     setBatchTagInput("");
   };
 
+  const handleAnalyzeAll = async () => {
+    if (analyzeProgress) {
+      analyzeCancelRef.current = true;
+      return;
+    }
+    const apiKey = await getSetting("api_key");
+    if (!apiKey) {
+      toastManager.add({ title: "Add your OpenRouter API key in Settings", type: "error" });
+      return;
+    }
+    const model = (await getSetting("model")) ?? "anthropic/claude-sonnet-4-6";
+    analyzeCancelRef.current = false;
+    setAnalyzeProgress({ done: 0, total: allImages.length });
+
+    for (let i = 0; i < allImages.length; i++) {
+      if (analyzeCancelRef.current) break;
+      const img = allImages[i];
+      if (img.file_path.toLowerCase().endsWith(".svg")) {
+        setAnalyzeProgress({ done: i + 1, total: allImages.length });
+        continue;
+      }
+      try {
+        const result = await invoke<{ title: string; tags: string[]; description: string } | null>(
+          "analyze_image",
+          { thumbPath: img.thumb_path, apiKey, model }
+        );
+        if (result && !analyzeCancelRef.current) {
+          await updateTitle(img.id, result.title);
+          for (const tag of imageTagsMap.get(img.id) ?? []) {
+            await removeTag(img.id, tag.id);
+          }
+          for (const tag of result.tags) {
+            await addTag(img.id, tag);
+          }
+          await updateDescription(img.id, result.description);
+        }
+      } catch (err) {
+        console.error(`[mood] batch analyze failed for ${img.id}:`, err);
+      }
+      setAnalyzeProgress({ done: i + 1, total: allImages.length });
+    }
+
+    setAnalyzeProgress(null);
+    if (!analyzeCancelRef.current) {
+      toastManager.add({ title: "Analysis complete", type: "success", timeout: 3000 });
+    }
+  };
+
   const handleRenameCollection = (id: string, currentName: string) => {
-    const name = window.prompt("Rename collection:", currentName);
-    if (name?.trim()) renameCollection(id, name.trim());
+    setRenaming({ type: "collection", id });
+    setRenameValue(currentName);
+    setTimeout(() => renameInputRef.current?.focus(), 0);
   };
 
   const handleRenameTag = (id: string, currentName: string) => {
-    const name = window.prompt("Rename tag:", currentName);
-    if (name?.trim()) renameTag(id, name.trim());
+    setRenaming({ type: "tag", id });
+    setRenameValue(currentName);
+    setTimeout(() => renameInputRef.current?.focus(), 0);
   };
 
-  const handleConfirmDelete = () => {
+  const commitRename = () => {
+    if (!renaming) return;
+    const trimmed = renameValue.trim();
+    if (trimmed) {
+      if (renaming.type === "collection") renameCollection(renaming.id, trimmed);
+      else renameTag(renaming.id, trimmed);
+    }
+    setRenaming(null);
+    setRenameValue("");
+  };
+
+  const handleConfirmDelete = async () => {
     if (!confirmDelete) return;
     if (confirmDelete.type === "collection") {
       deleteCollection(confirmDelete.id);
       if (selectedId === confirmDelete.id) onSelectId?.(null);
-    } else {
+    } else if (confirmDelete.type === "tag") {
       deleteTag(confirmDelete.id);
       if (selectedId === confirmDelete.id) onSelectId?.(null);
+    } else if (confirmDelete.type === "batch") {
+      await doBatchDelete();
+    } else if (confirmDelete.type === "reset") {
+      resetAll();
     }
     setConfirmDelete(null);
   };
@@ -271,10 +379,25 @@ export default function Grid({
                   ) : (
                     <div className="w-full h-full bg-muted" />
                   )}
-                  <div className="absolute inset-0 bg-black/30 flex flex-col items-center justify-center">
-                    <span className="text-white font-semibold text-sm text-center px-2 drop-shadow">
-                      {col.name}
-                    </span>
+                  <div className="absolute inset-0 bg-black/30 flex flex-col items-center justify-center px-2">
+                    {renaming?.type === "collection" && renaming.id === col.id ? (
+                      <input
+                        ref={renameInputRef}
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitRename();
+                          if (e.key === "Escape") { setRenaming(null); setRenameValue(""); }
+                        }}
+                        onBlur={commitRename}
+                        onClick={(e) => e.stopPropagation()}
+                        className="bg-transparent text-white font-semibold text-sm text-center outline-none border-b border-white/60 w-full"
+                      />
+                    ) : (
+                      <span className="text-white font-semibold text-sm text-center drop-shadow">
+                        {col.name}
+                      </span>
+                    )}
                     <span className="text-white/70 text-xs mt-1">
                       {ids.size} {ids.size === 1 ? "image" : "images"}
                     </span>
@@ -340,13 +463,27 @@ export default function Grid({
             {tagList.map(([id, { name, count }]) => (
               <ContextMenu.Root key={id}>
                 <ContextMenu.Trigger className="contents">
-                  <button
-                    onClick={() => onSelectId?.(id)}
-                    className="rounded-full border border-border bg-muted px-4 py-2 text-sm font-medium hover:bg-accent transition-colors"
-                  >
-                    {name}
-                    <span className="ml-2 text-muted-foreground text-xs">{count}</span>
-                  </button>
+                  {renaming?.type === "tag" && renaming.id === id ? (
+                    <input
+                      ref={renameInputRef}
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") commitRename();
+                        if (e.key === "Escape") { setRenaming(null); setRenameValue(""); }
+                      }}
+                      onBlur={commitRename}
+                      className="rounded-full border border-ring bg-muted px-4 py-2 text-sm font-medium outline-none ring-1 ring-ring"
+                    />
+                  ) : (
+                    <button
+                      onClick={() => onSelectId?.(id)}
+                      className="rounded-full border border-border bg-muted px-4 py-2 text-sm font-medium hover:bg-accent transition-colors"
+                    >
+                      {name}
+                      <span className="ml-2 text-muted-foreground text-xs">{count}</span>
+                    </button>
+                  )}
                 </ContextMenu.Trigger>
                 <ContextMenu.Portal>
                   <ContextMenu.Positioner>
@@ -375,25 +512,57 @@ export default function Grid({
   };
 
   // Masonry image grid
-  const renderMasonryGrid = () =>
-    filteredImages.length === 0 ? (
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 py-24 text-muted-foreground select-none">
-        <RiImageAddLine className="size-12 opacity-40" />
-        {allImages.length === 0 ? (
-          <>
+  const renderMasonryGrid = () => {
+    if (filteredImages.length === 0) {
+      if (allImages.length === 0) {
+        return (
+          <div className="flex flex-1 flex-col items-center justify-center gap-10 select-none">
             <div className="text-center">
-              <p className="text-sm font-medium">Drop images to start your mood board</p>
-              <p className="text-xs mt-1 opacity-70">or paste a URL · or click + Add</p>
+              <p className="text-xl font-bold">Start your board</p>
+              <p className="text-sm text-muted-foreground mt-1">Save images from anywhere</p>
             </div>
-          </>
-        ) : (
+            <div className="flex gap-4">
+              <div className="flex w-40 flex-col items-center gap-3 rounded-xl border border-dashed border-border px-6 py-8 text-center text-muted-foreground">
+                <RiUploadLine className="size-7 opacity-40" />
+                <div>
+                  <p className="text-xs font-medium">Drag & drop</p>
+                  <p className="text-xs opacity-60 mt-0.5">image files</p>
+                </div>
+              </div>
+              <div className="flex w-40 flex-col items-center gap-3 rounded-xl border border-dashed border-border px-6 py-8 text-center text-muted-foreground">
+                <RiClipboardLine className="size-7 opacity-40" />
+                <div>
+                  <p className="text-xs font-medium">⌘V Paste</p>
+                  <p className="text-xs opacity-60 mt-0.5">image or URL</p>
+                </div>
+              </div>
+              <button
+                onClick={handleFilePicker}
+                className="flex w-40 flex-col items-center gap-3 rounded-xl border border-dashed border-border px-6 py-8 text-center text-muted-foreground hover:border-foreground/30 hover:bg-accent transition-colors"
+              >
+                <RiFolderOpenLine className="size-7 opacity-40" />
+                <div>
+                  <p className="text-xs font-medium">Browse files</p>
+                  <p className="text-xs opacity-60 mt-0.5">or click + Add</p>
+                </div>
+              </button>
+            </div>
+          </div>
+        );
+      }
+      return (
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 text-muted-foreground select-none">
+          <RiImageAddLine className="size-10 opacity-30" />
           <p className="text-sm">No images match your filters</p>
-        )}
-      </div>
-    ) : (
+        </div>
+      );
+    }
+
+    const visibleImages = filteredImages.slice(0, visibleCount);
+    return (
       <div className="flex-1 overflow-y-auto p-4">
         <div className="columns-2 gap-3 sm:columns-3 lg:columns-4 xl:columns-5">
-          {filteredImages.map((img) => (
+          {visibleImages.map((img) => (
             <div
               key={img.id}
               className={cn(
@@ -401,7 +570,9 @@ export default function Grid({
                 selectedIds.has(img.id) &&
                   "ring-2 ring-primary ring-offset-2 ring-offset-background"
               )}
-              style={{ backgroundColor: img.dominant_color ?? undefined }}
+              style={img.file_path.toLowerCase().endsWith(".svg")
+                ? { backgroundColor: "#fff" }
+                : { backgroundColor: img.dominant_color ?? undefined }}
               onClick={(e) => {
                 if (e.metaKey || e.shiftKey) {
                   e.preventDefault();
@@ -449,8 +620,12 @@ export default function Grid({
             </div>
           ))}
         </div>
+        {visibleCount < filteredImages.length && (
+          <div ref={sentinelRef} className="h-1" />
+        )}
       </div>
     );
+  };
 
   // Determine which content to render
   const renderContent = () => {
@@ -458,6 +633,17 @@ export default function Grid({
     if (activeTab === "tags" && !selectedId) return renderTagGrid();
     return renderMasonryGrid();
   };
+
+  const cd = confirmDelete;
+  const confirmTitle = !cd ? "" :
+    cd.type === "collection" ? `Delete "${cd.name}"?` :
+    cd.type === "tag" ? `Delete tag "${cd.name}"?` :
+    cd.type === "batch" ? `Delete ${cd.count} image${cd.count !== 1 ? "s" : ""}?` :
+    "Delete everything?";
+  const confirmDescription = !cd ? undefined :
+    cd.type === "tag" ? "This removes the tag from all images." :
+    cd.type === "reset" ? "This permanently deletes all images and data. Cannot be undone." :
+    undefined;
 
   return (
     <div className="relative flex flex-1 overflow-hidden">
@@ -525,11 +711,40 @@ export default function Grid({
 
           <div className="flex-1" data-tauri-drag-region />
           {import.meta.env.DEV && (
+            <>
+              <button
+                onClick={() => saveExample(1)}
+                className="rounded-md border border-border px-3 py-1 text-xs font-medium text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
+              >
+                Save E1
+              </button>
+              <button
+                onClick={() => loadExample(1)}
+                className="rounded-md border border-border px-3 py-1 text-xs font-medium text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
+              >
+                E1
+              </button>
+              <button
+                onClick={() => setConfirmDelete({ type: "reset" })}
+                className="rounded-md border border-destructive/50 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 transition-colors"
+              >
+                Reset
+              </button>
+            </>
+          )}
+          {allImages.length > 0 && (
             <button
-              onClick={() => { if (confirm("Delete everything and start fresh?")) resetAll(); }}
-              className="rounded-md border border-destructive/50 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 transition-colors"
+              onClick={handleAnalyzeAll}
+              className={cn(
+                "rounded-md border px-3 py-1 text-xs font-medium transition-colors",
+                analyzeProgress
+                  ? "border-destructive/50 text-destructive hover:bg-destructive/10"
+                  : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
+              )}
             >
-              Reset
+              {analyzeProgress
+                ? `${analyzeProgress.done}/${analyzeProgress.total} — Cancel`
+                : "✨ Analyze All"}
             </button>
           )}
           <button
@@ -560,22 +775,15 @@ export default function Grid({
         onDelete={handleDelete}
         onUpdateTitle={updateTitle}
         onUpdateNotes={updateNotes}
+        onUpdateDescription={updateDescription}
         imgSrc={imgSrc}
       />
 
       <ConfirmDialog
         open={confirmDelete !== null}
         onOpenChange={(open) => { if (!open) setConfirmDelete(null); }}
-        title={
-          confirmDelete?.type === "collection"
-            ? `Delete "${confirmDelete.name}"?`
-            : `Delete tag "${confirmDelete?.name}"?`
-        }
-        description={
-          confirmDelete?.type === "tag"
-            ? "This removes the tag from all images."
-            : undefined
-        }
+        title={confirmTitle}
+        description={confirmDescription}
         onConfirm={handleConfirmDelete}
       />
     </div>
