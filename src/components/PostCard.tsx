@@ -1,4 +1,4 @@
-import { RiExternalLinkLine } from "@remixicon/react";
+import { RiExternalLinkLine, RiTwitterLine } from "@remixicon/react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Image } from "@/hooks/use-images";
 
@@ -25,9 +25,13 @@ export function PostCard({ image }: { image: Image }) {
 
   return (
     <div className="border-b border-border/50 px-5 py-3">
-      <span className="mb-2 block text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-        {meta.platform === "twitter" ? "X / Twitter" : "Link"}
-      </span>
+      <div className="mb-2">
+        {meta.platform === "twitter" ? (
+          <RiTwitterLine className="size-4 text-muted-foreground" />
+        ) : (
+          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Link</span>
+        )}
+      </div>
       <div className="space-y-1.5">
         {meta.authorName && (
           <p className="text-xs text-muted-foreground">{meta.authorName}</p>
