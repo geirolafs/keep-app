@@ -25,4 +25,7 @@ serde_json = "1"
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 uuid = { version = "1", features = ["v7"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+color-thief = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tauri-plugin-dialog = "2"
 

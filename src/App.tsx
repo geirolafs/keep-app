@@ -1,19 +1,83 @@
+import { useEffect, useRef, useState } from "react";
+import { Toast } from "@base-ui/react/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
-import AppSidebar from "@/components/Sidebar";
+import { ToastList } from "@/components/ui/toast-viewport";
+import { toastManager } from "@/lib/toast";
+import TopNav, { type Tab, type Sort } from "@/components/TopNav";
 import Grid from "@/components/Grid";
+import { useCollections, CollectionsProvider } from "@/hooks/useCollections";
+import { TagsProvider } from "@/hooks/use-tags";
+
+function AppContent() {
+  const [activeTab, setActiveTab] = useState<Tab>("all");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sort, setSort] = useState<Sort>("newest");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const { createCollection } = useCollections();
+
+  const handleCreateCollection = () => {
+    const name = window.prompt("Collection name:");
+    if (name?.trim()) {
+      createCollection(name.trim());
+    }
+  };
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "n") {
+        if (activeTab === "collections") {
+          e.preventDefault();
+          handleCreateCollection();
+        }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [activeTab]);
+
+  return (
+    <TooltipProvider>
+      <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
+        <TopNav
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          sort={sort}
+          onSortChange={setSort}
+          onCreateCollection={handleCreateCollection}
+          searchInputRef={searchInputRef}
+        />
+        <Grid
+          activeTab={activeTab}
+          sort={sort}
+          searchQuery={searchQuery}
+          selectedId={selectedId}
+          onSelectId={setSelectedId}
+          onCreateCollection={handleCreateCollection}
+        />
+      </div>
+      <ToastList />
+    </TooltipProvider>
+  );
+}
 
 export default function App() {
   return (
-    <TooltipProvider>
-      <SidebarProvider>
-        <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
-          <AppSidebar />
-          <SidebarInset className="flex flex-col overflow-hidden">
-            <Grid />
-          </SidebarInset>
-        </div>
-      </SidebarProvider>
-    </TooltipProvider>
+    <TagsProvider>
+      <CollectionsProvider>
+        <Toast.Provider toastManager={toastManager}>
+          <AppContent />
+        </Toast.Provider>
+      </CollectionsProvider>
+    </TagsProvider>
   );
 }
