@@ -17,6 +17,7 @@ export interface Image {
   dominant_color: string | null;
   palette: string | null;
   created_at: number;
+  kind: string;
 }
 
 interface SavedImageResult {
@@ -28,6 +29,7 @@ interface SavedImageResult {
   dominant_color: string | null;
   palette: string | null;
   created_at: number;
+  kind: string;
 }
 
 async function getDb() {
@@ -61,8 +63,8 @@ export function useImages() {
 
       const db = await getDb();
       await db.execute(
-        `INSERT INTO images (id, file_path, thumb_path, width, height, dominant_color, palette, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)`,
+        `INSERT INTO images (id, file_path, thumb_path, width, height, dominant_color, palette, created_at, updated_at, kind)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9)`,
         [
           saved.id,
           saved.file_path,
@@ -72,6 +74,7 @@ export function useImages() {
           saved.dominant_color,
           saved.palette,
           saved.created_at,
+          saved.kind,
         ]
       );
 
@@ -96,8 +99,8 @@ export function useImages() {
 
       const db = await getDb();
       await db.execute(
-        `INSERT INTO images (id, file_path, thumb_path, width, height, dominant_color, palette, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)`,
+        `INSERT INTO images (id, file_path, thumb_path, width, height, dominant_color, palette, created_at, updated_at, kind)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9)`,
         [
           saved.id,
           saved.file_path,
@@ -107,6 +110,7 @@ export function useImages() {
           saved.dominant_color,
           saved.palette,
           saved.created_at,
+          saved.kind,
         ]
       );
 
@@ -114,7 +118,7 @@ export function useImages() {
         { ...saved, source_url: null, title: null, notes: null, description: null },
         ...prev,
       ]);
-      toastManager.add({ title: "Image saved", type: "success", timeout: 2500 });
+      toastManager.add({ title: saved.kind === "video" ? "Video saved" : "Image saved", type: "success", timeout: 2500 });
     } catch (err) {
       console.error("[mood] savePath failed:", err);
       toastManager.add({ title: "Failed to save image", type: "error" });
@@ -131,8 +135,8 @@ export function useImages() {
 
       const db = await getDb();
       await db.execute(
-        `INSERT INTO images (id, file_path, thumb_path, source_url, width, height, dominant_color, palette, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)`,
+        `INSERT INTO images (id, file_path, thumb_path, source_url, width, height, dominant_color, palette, created_at, updated_at, kind)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10)`,
         [
           saved.id,
           saved.file_path,
@@ -143,6 +147,7 @@ export function useImages() {
           saved.dominant_color,
           saved.palette,
           saved.created_at,
+          saved.kind,
         ]
       );
 
@@ -258,6 +263,7 @@ export function useImages() {
           height: img.height,
           created_at: img.created_at,
           updated_at: img.updated_at ?? img.created_at,
+          kind: img.kind ?? "image",
         })),
         tags,
         image_tags: imageTags,
@@ -277,7 +283,7 @@ export function useImages() {
     try {
       const result = await invoke<{ data_dir: string; snapshot_json: string }>("load_example_snapshot", { n });
       const snapshot = JSON.parse(result.snapshot_json) as {
-        images: Array<{ id: string; file_name: string; thumb_name: string; source_url: string | null; title: string | null; notes: string | null; description: string | null; dominant_color: string | null; palette: string | null; width: number; height: number; created_at: number; updated_at: number }>;
+        images: Array<{ id: string; file_name: string; thumb_name: string; source_url: string | null; title: string | null; notes: string | null; description: string | null; dominant_color: string | null; palette: string | null; width: number; height: number; created_at: number; updated_at: number; kind?: string }>;
         tags: Array<{ id: string; name: string }>;
         image_tags: Array<{ image_id: string; tag_id: string }>;
         collections: Array<{ id: string; name: string }>;
@@ -293,11 +299,11 @@ export function useImages() {
 
       for (const img of snapshot.images) {
         await db.execute(
-          `INSERT INTO images (id, file_path, thumb_path, source_url, title, notes, description, dominant_color, palette, width, height, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+          `INSERT INTO images (id, file_path, thumb_path, source_url, title, notes, description, dominant_color, palette, width, height, created_at, updated_at, kind)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
           [img.id, `${result.data_dir}/images/${img.file_name}`, `${result.data_dir}/${img.thumb_name === img.file_name ? "images" : "thumbs"}/${img.thumb_name}`,
            img.source_url, img.title, img.notes, img.description ?? null, img.dominant_color, img.palette,
-           img.width, img.height, img.created_at, img.updated_at]
+           img.width, img.height, img.created_at, img.updated_at, img.kind ?? "image"]
         );
       }
       for (const tag of snapshot.tags) {

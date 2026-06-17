@@ -90,7 +90,7 @@ export function Lightbox({
     let cancelled = false;
 
     (async () => {
-      if (image.file_path.toLowerCase().endsWith(".svg")) return;
+      if (image.kind === "video") return;
       const mode = await getSetting("analyze_mode");
       if (!mode || mode === "manual") return;
       if (mode === "auto_new" && image.description) return;
@@ -148,6 +148,7 @@ export function Lightbox({
   if (currentIndex === null || !image) return null;
 
   const isSvg = image.file_path.toLowerCase().endsWith(".svg");
+  const isVideo = image.kind === "video";
   const imageTags = imageTagsMap.get(image.id) ?? [];
   const imageCollections = imageCollectionsMap.get(image.id) ?? [];
   const unassignedCollections = collections.filter(
@@ -219,23 +220,36 @@ export function Lightbox({
       style={{ background: isSvg
         ? "repeating-conic-gradient(#d0d0d0 0% 25%, #f8f8f8 0% 50%) 0 0 / 24px 24px"
         : buildMeshBackground(palette) }}
+
     >
       {/* Image area */}
       <div className="relative flex flex-1 items-center justify-center overflow-hidden">
-        <img
-          src={imgSrc(image.file_path)}
-          alt={image.title ?? ""}
-          className="max-h-[90vh] max-w-full object-contain p-8"
-          draggable={false}
-          onError={(e) => {
-            e.currentTarget.style.display = "none";
-            const fallback = e.currentTarget.nextElementSibling as HTMLElement | null;
-            if (fallback) fallback.removeAttribute("hidden");
-          }}
-        />
-        <div hidden className="flex h-48 w-48 items-center justify-center rounded-xl bg-white/10 text-white/50 text-sm">
-          Image file missing
-        </div>
+        {isVideo ? (
+          <video
+            src={imgSrc(image.file_path)}
+            controls
+            autoPlay
+            className="max-h-[90vh] max-w-full p-8"
+            draggable={false}
+          />
+        ) : (
+          <>
+            <img
+              src={imgSrc(image.file_path)}
+              alt={image.title ?? ""}
+              className="max-h-[90vh] max-w-full object-contain p-8"
+              draggable={false}
+              onError={(e) => {
+                e.currentTarget.style.display = "none";
+                const fallback = e.currentTarget.nextElementSibling as HTMLElement | null;
+                if (fallback) fallback.removeAttribute("hidden");
+              }}
+            />
+            <div hidden className="flex h-48 w-48 items-center justify-center rounded-xl bg-white/10 text-white/50 text-sm">
+              Image file missing
+            </div>
+          </>
+        )}
 
         {/* Prev button */}
         {currentIndex > 0 && (

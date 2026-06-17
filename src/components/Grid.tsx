@@ -22,7 +22,7 @@ import { useSettings } from "@/hooks/use-settings";
 import { toastManager } from "@/lib/toast";
 import type { Tab, Sort } from "@/components/TopNav";
 
-const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "tiff", "tif", "svg", "jxl", "heic", "heif"]);
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "tiff", "tif", "svg", "jxl", "heic", "heif", "mp4", "mov", "webm"]);
 
 function getExt(path: string) {
   return path.split(".").pop()?.toLowerCase() ?? "";
@@ -171,7 +171,7 @@ export default function Grid({
     const result = await openDialog({
       multiple: true,
       filters: [
-        { name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "tiff", "tif", "svg", "jxl", "heic", "heif"] },
+        { name: "Images & Video", extensions: ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "tiff", "tif", "svg", "jxl", "heic", "heif", "mp4", "mov", "webm"] },
       ],
     });
     if (!result) return;
@@ -246,7 +246,7 @@ export default function Grid({
     for (let i = 0; i < allImages.length; i++) {
       if (analyzeCancelRef.current) break;
       const img = allImages[i];
-      if (img.file_path.toLowerCase().endsWith(".svg")) {
+      if (img.kind === "video") {
         setAnalyzeProgress({ done: i + 1, total: allImages.length });
         continue;
       }
@@ -585,13 +585,25 @@ export default function Grid({
               tabIndex={0}
               onKeyDown={(e) => e.key === "Enter" && setOpenId(img.id)}
             >
-              <LazyImage
-                src={imgSrc(img.thumb_path)}
-                width={img.width}
-                height={img.height}
-                className="w-full object-cover group-hover:opacity-90"
-                draggable={false}
-              />
+              {img.kind === "video" ? (
+                <video
+                  src={imgSrc(img.file_path)}
+                  autoPlay
+                  muted
+                  loop
+                  playsInline
+                  className="w-full object-cover group-hover:opacity-90"
+                  draggable={false}
+                />
+              ) : (
+                <LazyImage
+                  src={imgSrc(img.thumb_path)}
+                  width={img.width}
+                  height={img.height}
+                  className="w-full object-cover group-hover:opacity-90"
+                  draggable={false}
+                />
+              )}
               <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
               {/* Tag chips on hover */}
               <div className="absolute bottom-0 left-0 right-0 hidden group-hover:flex flex-wrap gap-1 p-2 bg-gradient-to-t from-black/60 to-transparent">

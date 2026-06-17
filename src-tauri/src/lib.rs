@@ -21,6 +21,7 @@ struct SavedImage {
     dominant_color: Option<String>,
     palette: Option<String>,
     created_at: u64,
+    kind: String,
 }
 
 // ── JXL decoder ───────────────────────────────────────────────────────────────
@@ -101,6 +102,91 @@ fn decode_heic(bytes: &[u8]) -> Result<image::DynamicImage, String> {
     }
 }
 
+// ── video frame extractor (macOS qlmanage — no external deps) ─────────────────
+
+fn extract_video_frame(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    let tmp_dir = std::env::temp_dir().join(format!("keep_{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+
+    std::process::Command::new("/usr/bin/qlmanage")
+        .args([
+            "-t", "-s", "800",
+            "-o", tmp_dir.to_str().unwrap_or("/tmp"),
+            path.to_str().unwrap_or(""),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| { let _ = std::fs::remove_dir_all(&tmp_dir); format!("qlmanage failed: {}", e) })?;
+
+    // qlmanage outputs <filename>.<ext>.png in the output dir
+    let file_name = path.file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("Invalid video path")?;
+    let thumb_file = tmp_dir.join(format!("{}.png", file_name));
+
+    let bytes = std::fs::read(&thumb_file)
+        .map_err(|_| "qlmanage did not produce a thumbnail — unsupported video format?".to_string())?;
+    std::fs::remove_dir_all(&tmp_dir).ok();
+    Ok(bytes)
+}
+
+async fn process_video_from_path(
+    app: &tauri::AppHandle,
+    src_path: &std::path::Path,
+    ext: &str,
+) -> Result<SavedImage, String> {
+    let id = uuid::Uuid::now_v7().to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or(std::time::Duration::ZERO)
+        .as_millis() as u64;
+
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let images_dir = data_dir.join("images");
+    let thumbs_dir = data_dir.join("thumbs");
+    std::fs::create_dir_all(&images_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&thumbs_dir).map_err(|e| e.to_string())?;
+
+    let file_path = images_dir.join(format!("{}.{}", id, ext.to_lowercase()));
+    std::fs::copy(src_path, &file_path).map_err(|e| e.to_string())?;
+
+    let frame_bytes = extract_video_frame(&file_path)?;
+    let img = image::load_from_memory(&frame_bytes).map_err(|e| e.to_string())?;
+    let (width, height) = (img.width(), img.height());
+
+    let thumb = img.resize(400, 400, FilterType::Triangle);
+    let thumb_path = thumbs_dir.join(format!("{}.jpg", id));
+    thumb
+        .save_with_format(&thumb_path, image::ImageFormat::Jpeg)
+        .map_err(|e| e.to_string())?;
+
+    let rgb_img = img.to_rgb8();
+    let raw_pixels = rgb_img.as_raw();
+    let colors = get_palette(raw_pixels, ColorFormat::Rgb, 10, 5).ok();
+    let (dominant_color, palette) = if let Some(ref cols) = colors {
+        let hexes: Vec<String> = cols
+            .iter()
+            .map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b))
+            .collect();
+        (hexes.first().cloned(), serde_json::to_string(&hexes).ok())
+    } else {
+        (None, None)
+    };
+
+    Ok(SavedImage {
+        id,
+        file_path: file_path.to_string_lossy().to_string(),
+        thumb_path: thumb_path.to_string_lossy().to_string(),
+        width,
+        height,
+        dominant_color,
+        palette,
+        created_at: now,
+        kind: "video".to_string(),
+    })
+}
+
 // ── shared helper ──────────────────────────────────────────────────────────────
 
 async fn process_and_save(
@@ -141,6 +227,7 @@ async fn process_and_save(
             dominant_color: None,
             palette: None,
             created_at: now,
+            kind: "image".to_string(),
         });
     }
 
@@ -193,6 +280,7 @@ async fn process_and_save(
         dominant_color,
         palette,
         created_at: now,
+        kind: "image".to_string(),
     })
 }
 
@@ -209,12 +297,17 @@ async fn save_image_bytes(
 
 #[tauri::command]
 async fn save_image_from_path(app: tauri::AppHandle, path: String) -> Result<SavedImage, String> {
-    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
     let ext = std::path::Path::new(&path)
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("png")
         .to_string();
+
+    if ["mp4", "mov", "webm"].iter().any(|v| v.eq_ignore_ascii_case(&ext)) {
+        return process_video_from_path(&app, std::path::Path::new(&path), &ext).await;
+    }
+
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
     process_and_save(&app, &bytes, &ext, None).await
 }
 
@@ -309,14 +402,24 @@ async fn analyze_image(thumb_path: String, api_key: String, model: String) -> Re
         .unwrap_or("jpg")
         .to_lowercase();
 
-    if ext == "svg" {
-        return Err("SVG files cannot be analyzed".to_string());
-    }
-
-    let bytes = std::fs::read(&thumb_path).map_err(|e| e.to_string())?;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-
-    let media_type = if ext == "png" { "image/png" } else { "image/jpeg" };
+    // Prepare image bytes + media type for the vision API
+    let (b64, media_type) = if ext == "svg" {
+        // Rasterize SVG via qlmanage → PNG
+        let png = extract_video_frame(std::path::Path::new(&thumb_path))
+            .map_err(|e| format!("SVG rasterization failed: {}", e))?;
+        (base64::engine::general_purpose::STANDARD.encode(&png), "image/png")
+    } else if ext == "gif" {
+        // Decode frame 0 → JPEG (GIF thumb is the animated original)
+        let gif_bytes = std::fs::read(&thumb_path).map_err(|e| e.to_string())?;
+        let img = image::load_from_memory(&gif_bytes).map_err(|e| e.to_string())?;
+        let mut cur = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut cur, image::ImageFormat::Jpeg).map_err(|e| e.to_string())?;
+        (base64::engine::general_purpose::STANDARD.encode(cur.into_inner()), "image/jpeg")
+    } else {
+        let bytes = std::fs::read(&thumb_path).map_err(|e| e.to_string())?;
+        let mt = if ext == "png" { "image/png" } else { "image/jpeg" };
+        (base64::engine::general_purpose::STANDARD.encode(&bytes), mt)
+    };
 
     // OpenRouter / OpenAI chat completions format with vision
     let body = serde_json::json!({
@@ -431,6 +534,12 @@ pub fn run() {
             ALTER TABLE images ADD COLUMN description TEXT;
             CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
         ",
+    },
+    Migration {
+        version: 4,
+        description: "add kind column",
+        kind: MigrationKind::Up,
+        sql: "ALTER TABLE images ADD COLUMN kind TEXT DEFAULT 'image';",
     },
     ];
 

@@ -101,15 +101,18 @@ Add support for additional file formats beyond the current `png | jpg | jpeg | g
 | `bmp` | `bmp` feature | [x] |
 | `jxl` | `jxl-oxide` crate — decode to `DynamicImage`, JPEG thumbnail as normal | [x] |
 | `svg` | Special path: copy as-is, thumb_path = file_path, skip decode/palette | [x] |
-| `mp4` / `mov` / `webm` | Video — extract first frame via ffmpeg or similar; thumbnail from frame | [ ] |
+| `mp4` / `mov` / `webm` | Video — shell out to `ffmpeg`, extract frame 0 as JPEG thumb; `<video>` in lightbox | [x] |
 | `heic` / `heif` | `libheif-rs` crate (system `libheif` via `brew install libheif`) | [x] |
-| `pdf` | Render first page as image — needs PDF library; low priority | [ ] |
+| `pdf` | Render first page as image — needs PDF library; low priority | deferred |
 
 #### Implementation notes
 - **Standard formats**: add feature flags to `Cargo.toml` + extend `IMAGE_EXTENSIONS` in `Grid.tsx` + update file picker filter
 - **SVG special path**: detect `ext == "svg"` in `process_and_save`; copy bytes as-is; set `thumb_path = file_path`; skip `image::load_from_memory` + color extraction; return `width=0, height=0, dominant_color=None, palette=None`
-- **Video**: significant new work — use `ffmpeg` crate or shell out to `ffmpeg`; extract frame 0; run through existing `process_and_save` pipeline; store video path separately for playback
-- **Skip for now**: heic, pdf — complex system deps, low user demand relative to effort
+- **Video path** (`process_video_from_path`): `std::fs::copy` src → `images/` (avoids reading large file into RAM); `/usr/bin/qlmanage -t -s 800` → PNG bytes; resize+save as JPEG thumb; palette from frame; `kind='video'`; playback via `<video>` + `convertFileSrc` in lightbox. Auto-analyze skipped; manual analyze works (thumb is JPEG).
+- **`kind` column** (schema v4, `DEFAULT 'image'`): borrowed from GatherOS — cleaner than extension checks throughout UI; sets up `kind='post'`/`kind='link'` for Phase 8
+- **Frame extraction**: uses macOS `qlmanage` (built-in Quick Look CLI, `/usr/bin/qlmanage`) — no external deps, handles all macOS-native video formats. Output: `<filename>.png` in a temp dir.
+- **Video streaming**: Tauri `asset://` protocol + WKWebView handles Range requests natively for `<video>` seeking
+- **Skip**: pdf — complex deps, low demand
 
 ### Phase 7 — Polish & Features
 
@@ -138,8 +141,8 @@ Add support for additional file formats beyond the current `png | jpg | jpeg | g
 - [ ] **Image dimensions + format**: show `{width} × {height} · {EXT}` in sidebar (data already in DB, format from `file_path` extension)
 
 #### AI Analysis
-- [ ] **SVG analysis**: render SVG to PNG in memory via `resvg` crate, send PNG to vision API — remove SVG analyze guard
-- [ ] **GIF analysis**: decode frame 0 to JPEG in analyze path (GIF thumb is now the original animated GIF, not usable as vision input)
+- [x] **SVG analysis**: rasterize via `qlmanage` (reuses video frame extractor, no new dep) → PNG → `image/png` to vision API
+- [x] **GIF analysis**: `image::load_from_memory` decodes frame 0 → encode to JPEG in memory → `image/jpeg` to vision API
 - [ ] **Generate prompt**: new `generate_prompt(thumb_path, api_key, model)` Rust command — sends image to vision model, asks for a detailed image generation prompt (Midjourney / DALL-E / Flux style). Returns prompt string. Displayed in lightbox sidebar with one-click copy. Use `google/gemini-2.0-flash-exp` as default (fast, cheap, excellent at creative/descriptive tasks); falls back to configured model if not set. Add "Generate prompt" button in lightbox sidebar below description.
 
 #### Social URL Cards (paste URL → rich card)
@@ -170,10 +173,9 @@ Add support for additional file formats beyond the current `png | jpg | jpeg | g
 - [ ] **Save post action**: right-click or hover button on post — extracts post data from DOM for X, Instagram, Facebook (best-effort), LinkedIn (best-effort)
 - [ ] Firefox support (manifest v2 compat layer)
 
-#### Posts Schema (migration v5)
+#### Posts Schema (migration v6)
 ```sql
-ALTER TABLE images ADD COLUMN kind TEXT DEFAULT 'image';
--- 'image' | 'post' | 'link'
+-- kind already added in v4; post/link are new values
 ALTER TABLE images ADD COLUMN post_meta TEXT;
 -- JSON: { platform, authorName, authorHandle, authorAvatarUrl,
 --         caption, imageUrls[], videoUrl, quoted{} }
@@ -260,10 +262,11 @@ CREATE TABLE images (
   notes       TEXT,
   -- v3
   description TEXT,
-  -- v4 (Phase 7)
+  -- v4 (Phase 6)
+  kind        TEXT DEFAULT 'image', -- 'image' | 'video' | 'post' | 'link'
+  -- v5 (Phase 7)
   deleted_at  INTEGER,           -- NULL = active; set to move to Bin
-  -- v5 (Phase 8)
-  kind        TEXT DEFAULT 'image', -- 'image' | 'post' | 'link'
+  -- v6 (Phase 8)
   post_meta   TEXT               -- JSON: platform, author, caption, imageUrls[], quoted{}
 );
 
