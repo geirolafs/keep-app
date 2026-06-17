@@ -1,13 +1,17 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   RiArrowLeftLine,
   RiArrowRightLine,
   RiCloseLine,
+  RiDownload2Line,
   RiExternalLinkLine,
+  RiFileCopyLine,
   RiFolderOpenLine,
   RiLoader4Line,
+  RiSparkling2Line,
 } from "@remixicon/react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
@@ -27,6 +31,63 @@ export interface LightboxProps {
   onUpdateNotes: (id: string, notes: string) => void;
   onUpdateDescription: (id: string, description: string) => void;
   imgSrc: (path: string) => string;
+}
+
+type EditState = {
+  titleEditing: boolean;
+  titleValue: string;
+  notesValue: string;
+  descriptionValue: string;
+  tagInput: string;
+  creatingCol: boolean;
+  newColInput: string;
+  analyzing: boolean;
+  promptValue: string;
+  generatingPrompt: boolean;
+};
+
+type EditAction =
+  | { type: "imageChanged"; title: string; notes: string; description: string }
+  | { type: "setTitleEditing"; value: boolean }
+  | { type: "setTitleValue"; value: string }
+  | { type: "setNotesValue"; value: string }
+  | { type: "setDescriptionValue"; value: string }
+  | { type: "setTagInput"; value: string }
+  | { type: "setCreatingCol"; value: boolean }
+  | { type: "setNewColInput"; value: string }
+  | { type: "setAnalyzing"; value: boolean }
+  | { type: "analysisDone"; title: string; description: string }
+  | { type: "setGeneratingPrompt"; value: boolean }
+  | { type: "promptDone"; value: string };
+
+function editReducer(state: EditState, action: EditAction): EditState {
+  switch (action.type) {
+    case "imageChanged":
+      return {
+        titleEditing: false,
+        titleValue: action.title,
+        notesValue: action.notes,
+        descriptionValue: action.description,
+        tagInput: "",
+        creatingCol: false,
+        newColInput: "",
+        analyzing: false,
+        promptValue: "",
+        generatingPrompt: false,
+      };
+    case "setTitleEditing": return { ...state, titleEditing: action.value };
+    case "setTitleValue": return { ...state, titleValue: action.value };
+    case "setNotesValue": return { ...state, notesValue: action.value };
+    case "setDescriptionValue": return { ...state, descriptionValue: action.value };
+    case "setTagInput": return { ...state, tagInput: action.value };
+    case "setCreatingCol": return { ...state, creatingCol: action.value, newColInput: "" };
+    case "setNewColInput": return { ...state, newColInput: action.value };
+    case "setAnalyzing": return { ...state, analyzing: action.value };
+    case "analysisDone":
+      return { ...state, analyzing: false, titleValue: action.title, descriptionValue: action.description };
+    case "setGeneratingPrompt": return { ...state, generatingPrompt: action.value };
+    case "promptDone": return { ...state, generatingPrompt: false, promptValue: action.value };
+  }
 }
 
 function buildMeshBackground(palette: string[]): string {
@@ -60,14 +121,19 @@ export function Lightbox({
   } = useCollections();
   const { getSetting } = useSettings();
 
-  const [titleEditing, setTitleEditing] = useState(false);
-  const [titleValue, setTitleValue] = useState("");
-  const [notesValue, setNotesValue] = useState("");
-  const [descriptionValue, setDescriptionValue] = useState("");
-  const [tagInput, setTagInput] = useState("");
-  const [creatingCol, setCreatingCol] = useState(false);
-  const [newColInput, setNewColInput] = useState("");
-  const [analyzing, setAnalyzing] = useState(false);
+  const [edit, dispatch] = useReducer(editReducer, {
+    titleEditing: false,
+    titleValue: "",
+    notesValue: "",
+    descriptionValue: "",
+    tagInput: "",
+    creatingCol: false,
+    newColInput: "",
+    analyzing: false,
+    promptValue: "",
+    generatingPrompt: false,
+  });
+  const { titleEditing, titleValue, notesValue, descriptionValue, tagInput, creatingCol, newColInput, analyzing, promptValue, generatingPrompt } = edit;
   const tagInputRef = useRef<HTMLInputElement>(null);
 
   const image = currentIndex !== null ? images[currentIndex] : null;
@@ -75,14 +141,12 @@ export function Lightbox({
   // Sync state when image changes
   useEffect(() => {
     if (image) {
-      setTitleValue(image.title ?? "");
-      setNotesValue(image.notes ?? "");
-      setDescriptionValue(image.description ?? "");
-      setTitleEditing(false);
-      setTagInput("");
-      setCreatingCol(false);
-      setNewColInput("");
-      setAnalyzing(false);
+      dispatch({
+        type: "imageChanged",
+        title: image.title ?? "",
+        notes: image.notes ?? "",
+        description: image.description ?? "",
+      });
     }
   }, [currentIndex, image?.id]);
 
@@ -102,7 +166,7 @@ export function Lightbox({
       const model = (await getSetting("model")) ?? "anthropic/claude-sonnet-4-6";
 
       if (cancelled) return;
-      setAnalyzing(true);
+      dispatch({ type: "setAnalyzing", value: true });
       try {
         const result = await invoke<{ title: string; tags: string[]; description: string } | null>(
           "analyze_image",
@@ -110,19 +174,14 @@ export function Lightbox({
         );
         if (!result || cancelled) return;
         onUpdateTitle(image.id, result.title);
-        if (!cancelled) setTitleValue(result.title);
-        for (const tag of imageTagsMap.get(image.id) ?? []) {
-          await removeTag(image.id, tag.id);
-        }
-        for (const tag of result.tags) {
-          await addTag(image.id, tag);
-        }
+        await Promise.all((imageTagsMap.get(image.id) ?? []).map(tag => removeTag(image.id, tag.id)));
+        await Promise.all(result.tags.map(tag => addTag(image.id, tag)));
         onUpdateDescription(image.id, result.description);
-        if (!cancelled) setDescriptionValue(result.description);
+        if (!cancelled) dispatch({ type: "analysisDone", title: result.title, description: result.description });
       } catch (err) {
-        console.error("[mood] auto-analyze failed:", err);
+        console.error("[keep] auto-analyze failed:", err);
       } finally {
-        if (!cancelled) setAnalyzing(false);
+        if (!cancelled) dispatch({ type: "setAnalyzing", value: false });
       }
     })();
 
@@ -167,14 +226,14 @@ export function Lightbox({
   const saveTitle = () => {
     const trimmed = titleValue.trim();
     onUpdateTitle(image.id, trimmed);
-    setTitleEditing(false);
+    dispatch({ type: "setTitleEditing", value: false });
   };
 
   const handleAddTag = async (name: string) => {
     const trimmed = name.trim();
     if (!trimmed) return;
     await addTag(image.id, trimmed);
-    setTagInput("");
+    dispatch({ type: "setTagInput", value: "" });
   };
 
   const handleAnalyze = async () => {
@@ -185,7 +244,7 @@ export function Lightbox({
       return;
     }
     const model = (await getSetting("model")) ?? "anthropic/claude-sonnet-4-6";
-    setAnalyzing(true);
+    dispatch({ type: "setAnalyzing", value: true });
     try {
       const result = await invoke<{ title: string; tags: string[]; description: string } | null>(
         "analyze_image",
@@ -193,20 +252,59 @@ export function Lightbox({
       );
       if (!result) return;
       onUpdateTitle(image.id, result.title);
-      setTitleValue(result.title);
-      for (const tag of imageTags) {
-        await removeTag(image.id, tag.id);
-      }
-      for (const tag of result.tags) {
-        await addTag(image.id, tag);
-      }
+      await Promise.all(imageTags.map(tag => removeTag(image.id, tag.id)));
+      await Promise.all(result.tags.map(tag => addTag(image.id, tag)));
       onUpdateDescription(image.id, result.description);
-      setDescriptionValue(result.description);
+      dispatch({ type: "analysisDone", title: result.title, description: result.description });
     } catch (err) {
-      console.error("[mood] analyze failed:", err);
+      console.error("[keep] analyze failed:", err);
       toastManager.add({ title: "Analysis failed", type: "error" });
     } finally {
-      setAnalyzing(false);
+      dispatch({ type: "setAnalyzing", value: false });
+    }
+  };
+
+  const handleGeneratePrompt = async () => {
+    if (!image || generatingPrompt) return;
+    const apiKey = await getSetting("api_key");
+    if (!apiKey) {
+      toastManager.add({ title: "Add your OpenRouter API key in Settings", type: "error" });
+      return;
+    }
+    dispatch({ type: "setGeneratingPrompt", value: true });
+    try {
+      const result = await invoke<string>("generate_prompt", {
+        thumbPath: image.thumb_path,
+        apiKey,
+        model: "google/gemini-2.5-flash",
+      });
+      dispatch({ type: "promptDone", value: result });
+    } catch (err) {
+      const msg = typeof err === "string" ? err : String(err);
+      console.error("[keep] generate prompt failed:", msg);
+      toastManager.add({ title: `Prompt failed: ${msg}`, type: "error" });
+      dispatch({ type: "setGeneratingPrompt", value: false });
+    }
+  };
+
+  const handleExport = async () => {
+    const filename = image.file_path.split("/").pop() ?? "image";
+    const destPath = await saveDialog({ defaultPath: `~/Downloads/${filename}` });
+    if (!destPath) return;
+    try {
+      await invoke("export_original", { filePath: image.file_path, destPath });
+      toastManager.add({ title: "Exported", type: "success" });
+    } catch {
+      toastManager.add({ title: "Export failed", type: "error" });
+    }
+  };
+
+  const handleCopy = async () => {
+    try {
+      await invoke("copy_image_to_clipboard", { filePath: image.file_path });
+      toastManager.add({ title: "Copied to clipboard", type: "success", timeout: 1500 });
+    } catch {
+      toastManager.add({ title: "Copy failed", type: "error" });
     }
   };
 
@@ -228,6 +326,7 @@ export function Lightbox({
       <div className="relative flex flex-1 items-center justify-center overflow-hidden">
         {isVideo ? (
           <video
+            aria-label="Video player"
             src={imgSrc(image.file_path)}
             controls
             autoPlay
@@ -256,6 +355,7 @@ export function Lightbox({
         {/* Prev button */}
         {currentIndex > 0 && (
           <button
+            type="button"
             onClick={() => onNavigate(currentIndex - 1)}
             className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 hover:bg-white/20 p-2 text-white transition-colors"
             aria-label="Previous image"
@@ -267,6 +367,7 @@ export function Lightbox({
         {/* Next button */}
         {currentIndex < images.length - 1 && (
           <button
+            type="button"
             onClick={() => onNavigate(currentIndex + 1)}
             className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 hover:bg-white/20 p-2 text-white transition-colors"
             aria-label="Next image"
@@ -277,6 +378,7 @@ export function Lightbox({
 
         {/* Close button */}
         <button
+          type="button"
           onClick={onClose}
           className="absolute top-4 right-4 rounded-full bg-white/10 hover:bg-white/20 p-2 text-white transition-colors"
           aria-label="Close lightbox"
@@ -293,9 +395,10 @@ export function Lightbox({
             <Skeleton className="h-7 w-3/4" />
           ) : titleEditing ? (
             <input
+              aria-label="Edit title"
               autoFocus
               value={titleValue}
-              onChange={(e) => setTitleValue(e.target.value)}
+              onChange={(e) => dispatch({ type: "setTitleValue", value: e.target.value })}
               onBlur={saveTitle}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
@@ -306,12 +409,13 @@ export function Lightbox({
               className="w-full bg-transparent text-xl font-semibold outline-none"
             />
           ) : (
-            <h2
-              className="cursor-text text-xl font-semibold"
-              onClick={() => setTitleEditing(true)}
+            <button
+              type="button"
+              className="cursor-text text-xl font-semibold text-left"
+              onClick={() => dispatch({ type: "setTitleEditing", value: true })}
             >
               {image.title || "Untitled"}
-            </h2>
+            </button>
           )}
         </div>
 
@@ -320,6 +424,7 @@ export function Lightbox({
           <div className="mb-1.5 flex items-center justify-between">
             <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Description</span>
             {!isSvg && <button
+              type="button"
               onClick={handleAnalyze}
               disabled={analyzing}
               className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors disabled:opacity-40"
@@ -329,7 +434,12 @@ export function Lightbox({
                   <RiLoader4Line className="size-3 animate-spin" />
                   Analyzing…
                 </>
-              ) : "✨ Analyze"}
+              ) : (
+                <>
+                  <RiSparkling2Line className="size-3" />
+                  Analyze
+                </>
+              )}
             </button>}
           </div>
           {analyzing ? (
@@ -340,8 +450,9 @@ export function Lightbox({
             </div>
           ) : (
             <textarea
+              aria-label="Description"
               value={descriptionValue}
-              onChange={(e) => setDescriptionValue(e.target.value)}
+              onChange={(e) => dispatch({ type: "setDescriptionValue", value: e.target.value })}
               onBlur={() => { if (image) onUpdateDescription(image.id, descriptionValue); }}
               placeholder="No description yet…"
               rows={3}
@@ -350,14 +461,66 @@ export function Lightbox({
           )}
         </div>
 
+        {/* Generation Prompt */}
+        {!isVideo && (
+          <div className="border-b border-border/50 px-5 py-3">
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Generation Prompt</span>
+              <button
+                type="button"
+                onClick={handleGeneratePrompt}
+                disabled={generatingPrompt}
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors disabled:opacity-40"
+              >
+                {generatingPrompt ? (
+                  <>
+                    <RiLoader4Line className="size-3 animate-spin" />
+                    Generating…
+                  </>
+                ) : (
+                  <>
+                    <RiSparkling2Line className="size-3" />
+                    Generate
+                  </>
+                )}
+              </button>
+            </div>
+            {generatingPrompt ? (
+              <div className="space-y-1.5 pt-0.5">
+                <Skeleton className="h-3.5 w-full" />
+                <Skeleton className="h-3.5 w-5/6" />
+                <Skeleton className="h-3.5 w-4/6" />
+              </div>
+            ) : promptValue ? (
+              <div className="group relative">
+                <p className="pr-5 text-sm leading-relaxed text-foreground">{promptValue}</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(promptValue);
+                    toastManager.add({ title: "Prompt copied", type: "success", timeout: 1500 });
+                  }}
+                  className="absolute right-0 top-0 opacity-0 transition-opacity group-hover:opacity-100"
+                  aria-label="Copy prompt"
+                >
+                  <RiFileCopyLine className="size-3.5 text-muted-foreground hover:text-foreground" />
+                </button>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground/40">Midjourney / DALL-E / Flux style prompt</p>
+            )}
+          </div>
+        )}
+
         {/* Palette */}
         {palette.length > 0 && (
           <div className="border-b border-border/50 px-5 py-3">
             <span className="mb-2 block text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Colors</span>
             <div className="flex flex-wrap gap-2">
-              {palette.map((color, i) => (
+              {palette.map((color) => (
                 <button
-                  key={i}
+                  type="button"
+                  key={color}
                   onClick={() => {
                     navigator.clipboard.writeText(color);
                     toastManager.add({ title: `Copied ${color}`, type: "success", timeout: 1500 });
@@ -365,6 +528,7 @@ export function Lightbox({
                   className="size-6 rounded-md ring-1 ring-black/20 transition-transform hover:scale-110"
                   style={{ backgroundColor: color }}
                   title={color}
+                  aria-label={`Copy color ${color}`}
                 />
               ))}
             </div>
@@ -382,6 +546,7 @@ export function Lightbox({
               >
                 {tag.name}
                 <button
+                  type="button"
                   onClick={() => removeTag(image.id, tag.id)}
                   className="text-muted-foreground hover:text-foreground transition-colors leading-none"
                   aria-label={`Remove tag ${tag.name}`}
@@ -391,10 +556,11 @@ export function Lightbox({
               </span>
             ))}
             <input
+              aria-label="Add tag"
               ref={tagInputRef}
               list="lightbox-tag-suggestions"
               value={tagInput}
-              onChange={(e) => setTagInput(e.target.value)}
+              onChange={(e) => dispatch({ type: "setTagInput", value: e.target.value })}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
@@ -425,6 +591,7 @@ export function Lightbox({
               >
                 {col.name}
                 <button
+                  type="button"
                   onClick={() => removeFromCollection(col.id, image.id)}
                   className="text-muted-foreground hover:text-foreground transition-colors leading-none"
                   aria-label={`Remove from collection ${col.name}`}
@@ -435,6 +602,7 @@ export function Lightbox({
             ))}
             {unassignedCollections.length > 0 && (
               <select
+                aria-label="Add to collection"
                 value=""
                 onChange={(e) => {
                   if (e.target.value) {
@@ -454,9 +622,10 @@ export function Lightbox({
             )}
             {creatingCol ? (
               <input
+                aria-label="New collection name"
                 autoFocus
                 value={newColInput}
-                onChange={(e) => setNewColInput(e.target.value)}
+                onChange={(e) => dispatch({ type: "setNewColInput", value: e.target.value })}
                 onKeyDown={async (e) => {
                   if (e.key === "Enter") {
                     const trimmed = newColInput.trim();
@@ -464,21 +633,20 @@ export function Lightbox({
                       const col = await createCollection(trimmed);
                       await addToCollection(col.id, image.id);
                     }
-                    setCreatingCol(false);
-                    setNewColInput("");
+                    dispatch({ type: "setCreatingCol", value: false });
                   }
                   if (e.key === "Escape") {
-                    setCreatingCol(false);
-                    setNewColInput("");
+                    dispatch({ type: "setCreatingCol", value: false });
                   }
                 }}
-                onBlur={() => { setCreatingCol(false); setNewColInput(""); }}
+                onBlur={() => { dispatch({ type: "setCreatingCol", value: false }); }}
                 placeholder="New collection…"
                 className="w-32 bg-transparent py-0.5 text-xs outline-none placeholder:text-muted-foreground/50"
               />
             ) : (
               <button
-                onClick={() => setCreatingCol(true)}
+                type="button"
+                onClick={() => dispatch({ type: "setCreatingCol", value: true })}
                 className="py-0.5 text-xs text-muted-foreground/60 transition-colors hover:text-muted-foreground"
               >
                 + new
@@ -491,8 +659,9 @@ export function Lightbox({
         <div className="border-b border-border/50 px-5 py-3">
           <span className="mb-2 block text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Notes</span>
           <textarea
+            aria-label="Notes"
             value={notesValue}
-            onChange={(e) => setNotesValue(e.target.value)}
+            onChange={(e) => dispatch({ type: "setNotesValue", value: e.target.value })}
             onBlur={() => onUpdateNotes(image.id, notesValue)}
             placeholder="Add a note…"
             rows={3}
@@ -517,6 +686,24 @@ export function Lightbox({
               <RiFolderOpenLine className="h-3 w-3" />
               Reveal
             </button>
+            <button
+              type="button"
+              onClick={handleExport}
+              className="inline-flex items-center gap-0.5 hover:text-foreground transition-colors"
+            >
+              <RiDownload2Line className="h-3 w-3" />
+              Export
+            </button>
+            {!isVideo && !isSvg && (
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="inline-flex items-center gap-0.5 hover:text-foreground transition-colors"
+              >
+                <RiFileCopyLine className="h-3 w-3" />
+                Copy
+              </button>
+            )}
             {image.source_url && (
               <a
                 href={image.source_url}

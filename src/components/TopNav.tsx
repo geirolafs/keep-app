@@ -1,11 +1,12 @@
 import { RiSearchLine, RiSortAsc, RiSortDesc, RiSettings3Line, RiEyeLine, RiEyeOffLine, RiLoader4Line, RiSparkling2Line, RiQuestionLine } from "@remixicon/react";
-import { devSaveExample, devLoadExample, devResetAll, refreshThumbnails, useImages } from "@/hooks/use-images";
+import { devSaveExample, devLoadExample, devResetAll, refreshThumbnails, backfillVision, useImages } from "@/hooks/use-images";
 import { useTags } from "@/hooks/use-tags";
 import { invoke } from "@tauri-apps/api/core";
 import { toastManager } from "@/lib/toast";
 import {
 	type Ref,
 	type RefObject,
+	useEffect,
 	useImperativeHandle,
 	useReducer,
 	useRef,
@@ -13,9 +14,10 @@ import {
 } from "react";
 import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSettings, type AnalyzeMode } from "@/hooks/use-settings";
 
-export type Tab = "all" | "collections" | "tags";
+export type Tab = "all" | "collections" | "tags" | "bin";
 export type Sort = "newest" | "oldest";
 
 export interface TopNavHandle {
@@ -45,6 +47,7 @@ type SettingsState = {
 	model: string;
 	refreshProgress: { done: number; total: number } | null;
 	analyzeProgress: { done: number; total: number } | null;
+	visionProgress: { done: number; total: number } | null;
 	resetConfirm: boolean;
 };
 
@@ -57,6 +60,7 @@ type SettingsAction =
 	| { type: "setModel"; value: string }
 	| { type: "setRefreshProgress"; progress: { done: number; total: number } | null }
 	| { type: "setAnalyzeProgress"; progress: { done: number; total: number } | null }
+	| { type: "setVisionProgress"; progress: { done: number; total: number } | null }
 	| { type: "startResetConfirm" }
 	| { type: "cancelResetConfirm" };
 
@@ -71,6 +75,7 @@ function settingsReducer(state: SettingsState, action: SettingsAction): Settings
 		case "setModel": return { ...state, model: action.value };
 		case "setRefreshProgress": return { ...state, refreshProgress: action.progress };
 		case "setAnalyzeProgress": return { ...state, analyzeProgress: action.progress };
+		case "setVisionProgress": return { ...state, visionProgress: action.progress };
 		case "startResetConfirm": return { ...state, resetConfirm: true };
 		case "cancelResetConfirm": return { ...state, resetConfirm: false };
 	}
@@ -80,10 +85,12 @@ const TABS: { id: Tab; label: string }[] = [
 	{ id: "all", label: "All" },
 	{ id: "collections", label: "Collections" },
 	{ id: "tags", label: "Tags" },
+	{ id: "bin", label: "Bin" },
 ];
 
 const SHORTCUTS: [string, string][] = [
-	["⌘F", "Focus search"],
+	["⌘K", "Search palette"],
+	["⌘F", "Focus search bar"],
 	["← →", "Navigate lightbox"],
 	["Esc", "Close / cancel"],
 	["Del", "Delete selected"],
@@ -110,6 +117,7 @@ function TopNav({
 	const [helpOpen, setHelpOpen] = useState(false);
 	const nameInputRef = useRef<HTMLInputElement>(null);
 	const analyzeCancelRef = useRef(false);
+	const visionCancelRef = useRef(false);
 	const [settings, settingsDispatch] = useReducer(settingsReducer, {
 		open: false,
 		apiKey: "",
@@ -118,10 +126,18 @@ function TopNav({
 		model: "anthropic/claude-sonnet-4-6",
 		refreshProgress: null,
 		analyzeProgress: null,
+		visionProgress: null,
 		resetConfirm: false,
 	});
 	const { getSetting, setSetting } = useSettings();
-	const { images: allImages, updateTitle, updateDescription } = useImages();
+	const { images: allImages, binImages, updateTitle, updateDescription } = useImages();
+
+	// Auto-navigate away from Bin when it becomes empty
+	useEffect(() => {
+		if (activeTab === "bin" && binImages.length === 0) {
+			onTabChange("all");
+		}
+	}, [binImages.length, activeTab, onTabChange]);
 	const { imageTagsMap, addTag, removeTag } = useTags();
 
 	useImperativeHandle(ref, () => ({ startNaming, openHelp: () => setHelpOpen(true) }));
@@ -151,6 +167,24 @@ function TopNav({
 	const handleRefreshThumbnails = async () => {
 		await refreshThumbnails((done, total) => settingsDispatch({ type: "setRefreshProgress", progress: { done, total } }));
 		settingsDispatch({ type: "setRefreshProgress", progress: null });
+	};
+
+	const handleVisionScan = async () => {
+		if (settings.visionProgress) {
+			visionCancelRef.current = true;
+			return;
+		}
+		visionCancelRef.current = false;
+		const unindexed = allImages.filter((img) => img.ocr_text === null && img.kind !== "video");
+		if (unindexed.length === 0) {
+			toastManager.add({ title: "All images already indexed", type: "default", timeout: 2500 });
+			return;
+		}
+		settingsDispatch({ type: "setVisionProgress", progress: { done: 0, total: unindexed.length } });
+		const count = await backfillVision(allImages, (done, total) => settingsDispatch({ type: "setVisionProgress", progress: { done, total } }), visionCancelRef);
+		settingsDispatch({ type: "setVisionProgress", progress: null });
+		toastManager.add({ title: `Vision scan done — ${count} images indexed`, type: "success", timeout: 3000 });
+		setTimeout(() => window.location.reload(), 1500);
 	};
 
 	const handleAnalyzeAll = async () => {
@@ -224,24 +258,39 @@ function TopNav({
 
 			{/* Tabs */}
 			<div className="flex items-center gap-12 ml-[188px]">
-				{TABS.map((tab) => (
-					<button
-						type="button"
-						key={tab.id}
-						onClick={() => {
-							onTabChange(tab.id);
-							setNaming(false);
-						}}
-						className={[
-							"shrink-0 text-2xl font-bold uppercase leading-none transition-colors cap-trim",
-							activeTab === tab.id
-								? "text-foreground"
-								: "text-muted-foreground hover:text-foreground",
-						].join(" ")}
-					>
-						{tab.label}
-					</button>
-				))}
+				{TABS.map((tab) => {
+					const isDisabled = tab.id === "bin" && binImages.length === 0;
+
+					if (isDisabled) {
+						return (
+							<Tooltip key={tab.id}>
+								<TooltipTrigger render={<span className="shrink-0 text-2xl font-bold uppercase leading-none cap-trim opacity-25 cursor-not-allowed text-muted-foreground" />}>
+									{tab.label}
+								</TooltipTrigger>
+								<TooltipContent side="bottom">Bin is empty</TooltipContent>
+							</Tooltip>
+						);
+					}
+
+					return (
+						<button
+							type="button"
+							key={tab.id}
+							onClick={() => {
+								onTabChange(tab.id);
+								setNaming(false);
+							}}
+							className={[
+								"shrink-0 text-2xl font-bold uppercase leading-none transition-colors cap-trim",
+								activeTab === tab.id
+									? "text-foreground"
+									: "text-muted-foreground hover:text-foreground",
+							].join(" ")}
+						>
+							{tab.label}
+						</button>
+					);
+				})}
 			</div>
 
 			{/* Right controls */}
@@ -255,8 +304,14 @@ function TopNav({
 						value={searchQuery}
 						onChange={(e) => onSearchChange(e.target.value)}
 						placeholder="Search..."
-						className="h-7 w-48 rounded-full border border-input bg-input/30 pl-7 pr-3 py-1 text-xs transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+						className="h-7 w-48 rounded-full border border-input bg-input/30 pl-7 pr-10 py-1 text-xs transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
 					/>
+					<kbd className={[
+						"absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none rounded border border-border px-1 py-0.5 font-mono text-[10px] text-muted-foreground transition-opacity",
+						searchQuery ? "opacity-0" : "opacity-100",
+					].join(" ")}>
+						⌘K
+					</kbd>
 				</div>
 
 				{/* Sort toggle */}
@@ -382,6 +437,23 @@ function TopNav({
 										<><RiSparkling2Line className="mr-1.5 size-3.5" />Analyze All</>
 									)}
 								</Button>
+							</div>
+
+							{/* Vision scan */}
+							<div>
+								<Button
+									variant={settings.visionProgress ? "destructive" : "outline"}
+									size="sm"
+									className="w-full"
+									onClick={handleVisionScan}
+								>
+									{settings.visionProgress ? (
+										<><RiLoader4Line className="mr-1.5 size-3.5 animate-spin" />{settings.visionProgress.done}/{settings.visionProgress.total} — Cancel</>
+									) : (
+										"Scan with Vision"
+									)}
+								</Button>
+								<p className="mt-1.5 text-xs text-muted-foreground">Auto-tag + OCR all unindexed images using macOS Vision — no API key needed</p>
 							</div>
 
 							{/* Analyze Mode */}

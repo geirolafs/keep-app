@@ -13,6 +13,7 @@
     "sql:allow-select",
     "sql:allow-load",
     "dialog:default",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "dialog:allow-save"
   ]
 }

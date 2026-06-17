@@ -1,4 +1,4 @@
-import { createContext, createElement, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, createElement, use, useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import Database from "@tauri-apps/plugin-sql";
 import { toastManager } from "@/lib/toast";
@@ -15,7 +15,7 @@ export interface TagWithCount extends Tag {
 export type ImageTagMap = Map<string, Tag[]>;
 
 async function getDb() {
-  return Database.load("sqlite:mood.db");
+  return Database.load("sqlite:keep.db");
 }
 
 // ── internal state logic ───────────────────────────────────────────────────
@@ -139,13 +139,11 @@ function useTagsState() {
   }, []);
 
   const getTagCounts = useCallback((): TagWithCount[] => {
-    return allTags.map((tag) => {
-      let count = 0;
-      for (const tags of imageTagsMap.values()) {
-        if (tags.find((t) => t.id === tag.id)) count++;
-      }
-      return { ...tag, count };
-    });
+    const counts = new Map<string, number>();
+    for (const tags of imageTagsMap.values()) {
+      for (const t of tags) counts.set(t.id, (counts.get(t.id) ?? 0) + 1);
+    }
+    return allTags.map((tag) => ({ ...tag, count: counts.get(tag.id) ?? 0 }));
   }, [allTags, imageTagsMap]);
 
   const refreshImageTags = useCallback(async (imageId: string) => {
@@ -184,7 +182,7 @@ export function TagsProvider({ children }: { children: ReactNode }) {
 }
 
 export function useTags(): TagsState {
-  const ctx = useContext(TagsContext);
+  const ctx = use(TagsContext);
   if (!ctx) throw new Error("useTags must be used inside <TagsProvider>");
   return ctx;
 }

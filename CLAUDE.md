@@ -25,12 +25,13 @@ Phase 7 shipped so far:
 - [x] **Column count slider** — range input 2–12 in Grid toolbar; persisted to `settings` (`col_count`); `ResizeObserver` auto-fires when no manual pref
 - [x] **Analyze All → Settings** — button + inline progress in Settings modal AI section; `RiSparkling2Line` icon; `useImages` converted to React Context (`ImagesProvider`) so TopNav shares image state
 - [x] **Help modal** — `?` button in TopNav + `?` keypress (guards inputs); AlertDialog with shortcuts table + tips; `openHelp()` on `TopNavHandle`
+- [x] **⌘K search dialog** — `CommandDialog` (cmdk); grouped Images/Collections/Tags; Enter opens image or jumps to collection/tag; no query → 8 recent images
+- [x] **Export original** — "Export" (Tauri `dialog::save`, `export_original` Rust cmd) + "Copy" (`copy_image_to_clipboard` via `arboard`; hidden for SVG/video)
+- [x] **Generate prompt** — `generate_prompt` Rust cmd → Midjourney/DALL-E style prompt via `google/gemini-2.5-flash`; lightbox sidebar section with copy button
 
 Phase 7 remaining — see PLAN.md:
-- [ ] **Export original** — "Export Original" (Save As) + "Copy" (clipboard) in lightbox
-- [ ] **⌘K search dialog** — centered overlay, live results, keyboard nav
-- [ ] Bin / soft delete — schema migration v5 (`deleted_at`), Bin tab, auto-purge 90d, macOS Trash
-- [ ] Generate prompt button — `google/gemini-2.0-flash-exp`, one-click copy
+- [x] Bin / soft delete — schema migration v5 (`deleted_at`), Bin tab, auto-purge 90d, macOS Trash
+- [ ] Local AI — macOS Vision Framework (silent tagging) + Moondream2 (local LLM, ~1.3 GB)
 - [ ] Social URL cards — paste tweet/URL → og: scrape → `<PostCard>` in lightbox
 - [ ] AI semantic search — `sqlite-vec` embeddings, hybrid keyword + cosine
 

@@ -29,6 +29,47 @@ struct SavedImage {
     palette: Option<String>,
     created_at: u64,
     kind: String,
+    vision_tags: Vec<String>,
+    ocr_text: String,
+}
+
+// ── macOS Vision Framework helper (silent, zero setup) ────────────────────────
+
+fn run_vision(thumb_path: &str) -> (Vec<String>, String) {
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(_) => return (vec![], String::new()),
+    };
+    let dir = match exe.parent() {
+        Some(d) => d,
+        None => return (vec![], String::new()),
+    };
+    let binary_name = format!("keep-vision-{}-apple-darwin", std::env::consts::ARCH);
+    let binary = dir.join(&binary_name);
+    if !binary.exists() {
+        return (vec![], String::new());
+    }
+
+    let output = match std::process::Command::new(&binary).arg(thumb_path).output() {
+        Ok(o) => o,
+        Err(_) => return (vec![], String::new()),
+    };
+
+    let stdout = match std::str::from_utf8(&output.stdout) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("[vision] utf8 error: {}", e); return (vec![], String::new()); }
+    };
+
+    // Framework warnings are prepended on stdout with no newline on macOS 26+; slice from last '{'
+    let json_str = stdout.rfind('{').map(|i| &stdout[i..]).unwrap_or("");
+
+    #[derive(serde::Deserialize)]
+    struct VisionResult { tags: Vec<String>, ocr_text: String }
+
+    match serde_json::from_str::<VisionResult>(json_str) {
+        Ok(r) => (r.tags, r.ocr_text),
+        Err(_) => (vec![], String::new()),
+    }
 }
 
 // ── JXL decoder ───────────────────────────────────────────────────────────────
@@ -188,6 +229,8 @@ async fn process_video_from_path(
         palette,
         created_at: now,
         kind: "video".to_string(),
+        vision_tags: vec![],
+        ocr_text: String::new(),
     })
 }
 
@@ -232,6 +275,8 @@ async fn process_and_save(
             palette: None,
             created_at: now,
             kind: "image".to_string(),
+            vision_tags: vec![],
+            ocr_text: String::new(),
         });
     }
 
@@ -272,16 +317,22 @@ async fn process_and_save(
         (None, None)
     };
 
+    // ── local vision (silent, zero setup) ─────────────────────────────────────
+    let thumb_str = thumb_path.to_string_lossy();
+    let (vision_tags, ocr_text) = run_vision(&thumb_str);
+
     Ok(SavedImage {
         id,
         file_path: file_path.to_string_lossy().to_string(),
-        thumb_path: thumb_path.to_string_lossy().to_string(),
+        thumb_path: thumb_str.to_string(),
         width,
         height,
         dominant_color,
         palette,
         created_at: now,
         kind: "image".to_string(),
+        vision_tags,
+        ocr_text,
     })
 }
 
@@ -509,6 +560,129 @@ async fn analyze_image(thumb_path: String, api_key: String, model: String) -> Re
         .map_err(|e| format!("Failed to parse AI response: {} — raw: {}", e, cleaned))
 }
 
+#[tauri::command]
+async fn generate_prompt(thumb_path: String, api_key: String, model: String) -> Result<String, String> {
+    let ext = std::path::Path::new(&thumb_path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("jpg")
+        .to_lowercase();
+
+    let (b64, media_type) = if ext == "svg" {
+        let png = extract_video_frame(std::path::Path::new(&thumb_path))
+            .map_err(|e| format!("SVG rasterization failed: {}", e))?;
+        (base64::engine::general_purpose::STANDARD.encode(&png), "image/png")
+    } else if ext == "gif" {
+        let gif_bytes = std::fs::read(&thumb_path).map_err(|e| e.to_string())?;
+        let img = image::load_from_memory(&gif_bytes).map_err(|e| e.to_string())?;
+        let mut cur = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut cur, image::ImageFormat::Jpeg).map_err(|e| e.to_string())?;
+        (base64::engine::general_purpose::STANDARD.encode(cur.into_inner()), "image/jpeg")
+    } else {
+        let bytes = std::fs::read(&thumb_path).map_err(|e| e.to_string())?;
+        let mt = if ext == "png" { "image/png" } else { "image/jpeg" };
+        (base64::engine::general_purpose::STANDARD.encode(&bytes), mt)
+    };
+
+    let body = serde_json::json!({
+        "model": model,
+        "max_tokens": 512,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": { "url": format!("data:{};base64,{}", media_type, b64) }
+                },
+                {
+                    "type": "text",
+                    "text": "Write a detailed image generation prompt for this image, suitable for Midjourney, DALL-E, or Flux. Describe the subject, composition, style, lighting, color palette, mood, and any relevant technical or artistic details. Return ONLY the prompt text — no preamble, labels, or explanation."
+                }
+            ]
+        }]
+    });
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post("https://openrouter.ai/api/v1/chat/completions")
+        .header("authorization", format!("Bearer {}", api_key))
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?;
+
+    let resp_json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+
+    resp_json["choices"][0]["message"]["content"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .ok_or_else(|| format!("Unexpected response shape: {}", resp_json))
+}
+
+#[derive(serde::Serialize)]
+struct VisionAnalysis {
+    tags: Vec<String>,
+    ocr_text: String,
+}
+
+#[tauri::command]
+fn analyze_vision_item(thumb_path: String) -> VisionAnalysis {
+    let (tags, ocr_text) = run_vision(&thumb_path);
+    VisionAnalysis { tags, ocr_text }
+}
+
+#[tauri::command]
+fn export_original(file_path: String, dest_path: String) -> Result<(), String> {
+    std::fs::copy(&file_path, &dest_path)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn copy_image_to_clipboard(file_path: String) -> Result<(), String> {
+    let path = std::path::Path::new(&file_path);
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+    let img = match ext.as_str() {
+        "jxl" => {
+            let bytes = std::fs::read(&file_path).map_err(|e| e.to_string())?;
+            decode_jxl(&bytes)?
+        }
+        "heic" | "heif" => {
+            let bytes = std::fs::read(&file_path).map_err(|e| e.to_string())?;
+            decode_heic(&bytes)?
+        }
+        _ => image::open(&file_path).map_err(|e| e.to_string())?,
+    };
+
+    let rgba = img.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    let pixels = rgba.into_raw();
+
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard
+        .set_image(arboard::ImageData {
+            width: width as usize,
+            height: height as usize,
+            bytes: std::borrow::Cow::from(pixels),
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn trash_files(file_path: String, thumb_path: String) -> Result<(), String> {
+    // trash the main file
+    trash::delete(&file_path).map_err(|e| e.to_string())?;
+    // only trash thumb if it's a different file (GIF/SVG use file_path == thumb_path)
+    if thumb_path != file_path {
+        let _ = trash::delete(&thumb_path);
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let migrations = vec![
@@ -579,13 +753,25 @@ pub fn run() {
         kind: MigrationKind::Up,
         sql: "ALTER TABLE images ADD COLUMN kind TEXT DEFAULT 'image';",
     },
+    Migration {
+        version: 5,
+        description: "add deleted_at column",
+        kind: MigrationKind::Up,
+        sql: "ALTER TABLE images ADD COLUMN deleted_at INTEGER;",
+    },
+    Migration {
+        version: 6,
+        description: "add ocr_text column",
+        kind: MigrationKind::Up,
+        sql: "ALTER TABLE images ADD COLUMN ocr_text TEXT;",
+    },
     ];
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             SqlBuilder::new()
-                .add_migrations("sqlite:mood.db", migrations)
+                .add_migrations("sqlite:keep.db", migrations)
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
@@ -599,6 +785,11 @@ pub fn run() {
             save_example_snapshot,
             load_example_snapshot,
             analyze_image,
+            analyze_vision_item,
+            generate_prompt,
+            export_original,
+            copy_image_to_clipboard,
+            trash_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

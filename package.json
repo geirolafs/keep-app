@@ -13,7 +13,6 @@
   "dependencies": {
     "@base-ui/react": "^1.5.0",
     "@fontsource-variable/geist": "^5.2.9",
-    "@fontsource-variable/ibm-plex-sans": "^5.2.8",
     "@remixicon/react": "^4.9.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "~2",
@@ -21,6 +20,7 @@
     "@tauri-apps/plugin-sql": "~2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "cmdk": "^1.1.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "shadcn": "^4.11.0",

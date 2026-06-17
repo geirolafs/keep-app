@@ -127,30 +127,31 @@ Add support for additional file formats beyond the current `png | jpg | jpeg | g
 - [x] **Grid polish**: removed `rounded-lg` from cards; removed `outline` focus ring; `display: block` on img/video eliminates inline baseline descender gap.
 - [x] **Column count slider**: 2–12 columns; persisted to `settings` table (`col_count`). Range input in Grid toolbar; `ResizeObserver` auto-breakpoints still fire when no manual preference is set (`manualColsRef` guard).
 - [x] **Hover scale**: replaced gradient overlay + opacity fade with `scale(1.02)` inline style transform (`transition: transform 150ms ease`). Overlay div removed.
-- [x] **Video slow-mo in grid**: `onMouseEnter` → `playbackRate = 0.25`; `onMouseLeave` → `playbackRate = 1` on grid `<video>` elements.
+- [x] **Video slow-mo in grid**: `onLoadedData` → `playbackRate = 0.25` (always slow); `onMouseEnter` → `1`; `onMouseLeave` → `0.25`. Hover plays at normal speed, idle plays in slow-mo.
 
 #### Help & Shortcuts
 - [x] **`?` help modal**: `?` keypress (App.tsx, guards inputs/textareas) + `?` button in TopNav opens AlertDialog with keyboard shortcuts table + tips. `openHelp()` on `TopNavHandle`.
 
 #### Search
-- [ ] **⌘K search dialog**: centered overlay, large search input, live results (images by title/tag/description, collections, tags) with keyboard navigation (↑↓ select, Enter open, Esc close). Replaces/augments existing ⌘F top-nav focus. Results grouped by type.
+- [x] **⌘K search dialog**: `CommandDialog` (shadcn/ui `cmdk`) — centered overlay, results grouped by Images / Collections / Tags; keyboard nav handled by cmdk; Enter opens image in lightbox (`GridHandle.openImage`) or jumps to collection/tag via `setTabAndSelect`. No query → 8 recent images. Search input shows `⌘K` kbd badge (fades when typing).
 
 #### Tags
 - [x] **Sort tags by count**: Tags tab sorted count-desc, alpha tiebreak. Computed client-side from `imageTagsMap`.
 
 #### Bin / Soft Delete
-- [ ] **Schema migration v5**: `ALTER TABLE images ADD COLUMN deleted_at INTEGER` (NULL = active)
-- [ ] Filter all queries with `WHERE deleted_at IS NULL`
-- [ ] **Bin tab** in TopNav — shows deleted items, sorted newest-first
-- [ ] **Per-item restore** (set `deleted_at = NULL`) and **permanent delete** (move file to macOS Trash via `tauri-plugin-trash`)
-- [ ] **Empty Bin** button — moves all bin files to Trash
-- [ ] **Auto-purge on launch**: permanently delete items with `deleted_at < now - 90 days`
-- [ ] Multi-select + bulk restore in Bin
+- [x] **Schema migration v5**: `ALTER TABLE images ADD COLUMN deleted_at INTEGER` (NULL = active)
+- [x] Filter all queries with `WHERE deleted_at IS NULL`
+- [x] **Bin tab** in TopNav — shows deleted items, sorted newest-first
+- [x] **Per-item restore** (set `deleted_at = NULL`) and **permanent delete** (move file to macOS Trash via `tauri-plugin-trash`)
+- [x] **Empty Bin** button — moves all bin files to Trash
+- [x] **Auto-purge on launch**: permanently delete items with `deleted_at < now - 90 days`
+- [x] Multi-select + bulk restore in Bin
 
 #### Lightbox
 - [x] **Image dimensions + format**: `{width} × {height} · {EXT}` in sidebar date/source section; hidden for SVGs (width=0).
 - [x] **Reveal in Finder**: `revealItemInDir(file_path)` via `@tauri-apps/plugin-opener`; shown as "Reveal" link next to Source in lightbox sidebar.
-- [ ] **Export original**: two actions in lightbox sidebar next to Reveal — "Export Original" (Tauri `dialog::save` picker, defaults to `~/Downloads/<filename>`, copies `file_path` bytes as-is) and "Copy" (writes file bytes to macOS clipboard as the appropriate UTI — `public.png`/`public.jpeg`/etc — via Tauri `clipboard-manager` or `NSPasteboard` Rust call).
+- [x] **Export original**: "Export" (Tauri `dialog::save` picker, defaults to `~/Downloads/<filename>`, `export_original` Rust command) + "Copy" (decodes to RGBA → macOS clipboard via `arboard` crate, `copy_image_to_clipboard` Rust command; hidden for SVG/video). Both next to Reveal in lightbox date/source row.
+- [x] **Analyze button**: replaced `✨ Analyze` emoji text with `RiSparkling2Line` icon + "Analyze" label, matching Settings modal style.
 
 #### Dev Tools
 - [x] **Settings modal consolidation**: Save E1, Load E1, Reset (2-step inline confirm), Randomize Order button, Refresh Thumbs button all moved to Settings → Developer section (DEV-only). Toolbar now only has Analyze All + Add.
@@ -160,7 +161,40 @@ Add support for additional file formats beyond the current `png | jpg | jpeg | g
 - [x] **SVG analysis**: rasterize via `qlmanage` (reuses video frame extractor, no new dep) → PNG → `image/png` to vision API
 - [x] **GIF analysis**: `image::load_from_memory` decodes frame 0 → encode to JPEG in memory → `image/jpeg` to vision API
 - [x] **Move Analyze All to Settings**: "✨ Analyze All" removed from toolbar; button + inline progress (`n/total — Cancel`) in Settings modal AI section. `RiSparkling2Line` icon. `useImages` converted to React Context (`ImagesProvider`) so TopNav can access shared image state. Toolbar reverts to just column slider + `+ Add`.
-- [ ] **Generate prompt**: new `generate_prompt(thumb_path, api_key, model)` Rust command — sends image to vision model, asks for a detailed image generation prompt (Midjourney / DALL-E / Flux style). Returns prompt string. Displayed in lightbox sidebar with one-click copy. Use `google/gemini-2.0-flash-exp` as default (fast, cheap, excellent at creative/descriptive tasks); falls back to configured model if not set. Add "Generate prompt" button in lightbox sidebar below description.
+- [x] **Generate prompt**: `generate_prompt(thumb_path, api_key, model)` Rust command — same base64 image prep as `analyze_image`, returns a Midjourney/DALL-E/Flux style prompt string. Default model `google/gemini-2.5-flash` (fast, cheap, excellent at creative/descriptive tasks). "Generation Prompt" section in lightbox sidebar: Generate button, skeleton shimmer while loading, prompt text with hover copy button (`RiFileCopyLine`). Hidden for videos.
+
+#### Local AI — No API Key Required
+
+Two-tier approach: instant auto-tagging on every save (zero setup) + optional full vision LLM via one-time download. Removes the API key requirement for the core analyze workflow.
+
+##### Tier 1 — macOS Vision Framework (silent, always-on, zero setup)
+
+- [x] Write `keep-vision` Swift helper binary (`src-tauri/keep-vision.swift`, compiled to `binaries/keep-vision-aarch64-apple-darwin`)
+  - `VNClassifyImageRequest` → top-N confidence labels (>0.5, skip "no *") → auto-insert as tags on save
+  - `VNRecognizeTextRequest` → OCR text extracted from image (capped 2000 chars)
+  - Output: `{"tags": [...], "ocr_text": "..."}` — framework warns go to stdout on macOS 26+; parse via `rfind('{')` to skip them
+- [x] Add `keep-vision` as Tauri `externalBin` in `tauri.conf.json`; binary resolved via `current_exe().parent()`
+- [x] Rust: `run_vision()` helper called from `process_and_save()` → `vision_tags` + `ocr_text` returned in `SavedImage`; JS inserts tags + stores OCR on save
+- [x] Schema migration v6: `ALTER TABLE images ADD COLUMN ocr_text TEXT`; included in search filter
+- [x] **Scan with Vision** button in Settings AI section — `backfillVision()` loops unindexed images (`ocr_text IS NULL`), calls `analyze_vision_item` Rust command, inserts tags + sets `ocr_text`; progress + cancel; reloads on complete
+
+##### Tier 2 — Moondream2 (full local vision LLM, ~1.3 GB one-time download)
+
+Replaces `analyze_image` (title + tags + description) with a fully local pipeline. No network call, no API key.
+
+- [ ] Settings → AI section: **"Download KEEP AI (1.3 GB)"** button
+  - Downloads `moondream2-text-model.gguf` (~1.1 GB, Q4_K_M) + `moondream2-mmproj.gguf` (~200 MB) to `{app_data}/models/`
+  - Inline download progress bar; resumable on restart
+  - Button shows "KEEP AI Ready ✓" when model files are present
+- [ ] Bundle precompiled `llava-cli` binary (llama.cpp multimodal, arm64-apple-darwin) as Tauri `externalBin`
+  - Metal backend: Apple Silicon GPU acceleration, ~2–4s per image on M1+
+- [ ] Rust: `analyze_local(thumb_path)` — shell out to `llava-cli --model moondream2.gguf --mmproj moondream2-mmproj.gguf --image {thumb} --prompt "..."` → parse JSON output
+- [ ] Routing logic in `analyze_image` Rust command:
+  1. Model files present → `analyze_local()` (no network)
+  2. Model absent + `api_key` present → OpenRouter (current behavior)
+  3. Neither → return descriptive error: "Download KEEP AI in Settings, or add an API key"
+- [ ] `generate_prompt` does **not** use local model — local vision LLMs are noticeably weaker at creative prompt generation than large cloud models. Keep OpenRouter/Gemini for this feature only.
+- [ ] Relabel OpenRouter field in Settings: **"Advanced: use cloud model"** (not primary path)
 
 #### Social URL Cards (paste URL → rich card)
 > Requires `post_meta` column from Phase 8 migration v7 to be run first.
@@ -284,6 +318,8 @@ CREATE TABLE images (
   kind        TEXT DEFAULT 'image', -- 'image' | 'video' | 'post' | 'link'
   -- v5 (Phase 7)
   deleted_at  INTEGER,           -- NULL = active; set to move to Bin
+  -- v6 (Phase 7)
+  ocr_text    TEXT,              -- NULL = never Vision-scanned; "" = scanned, no text found
   -- v7 (Phase 8)
   post_meta   TEXT               -- JSON: platform, author, caption, imageUrls[], quoted{}
 );
@@ -327,10 +363,9 @@ refresh_thumbnails(items)                       -> Vec<RefreshResult>
 save_example_snapshot(slot)
 load_example_snapshot(slot)                     -> Vec<ImageRecord>
 reveal_item_in_dir(path)                        -- via tauri-plugin-opener
-
--- Planned
 export_original(file_path, dest_path)           -- copy bytes to user-chosen path
-generate_prompt(thumb_path, api_key, model)     -> String
+copy_image_to_clipboard(file_path)              -- decode → RGBA → macOS clipboard via arboard
+generate_prompt(thumb_path, api_key, model)     -> String  -- Midjourney/DALL-E/Flux style prompt via google/gemini-2.5-flash
 ```
 
 ---

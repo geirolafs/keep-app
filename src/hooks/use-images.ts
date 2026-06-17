@@ -13,12 +13,14 @@ export interface Image {
   title: string | null;
   notes: string | null;
   description: string | null;
+  ocr_text: string | null;
   width: number;
   height: number;
   dominant_color: string | null;
   palette: string | null;
   created_at: number;
   kind: string;
+  deleted_at: number | null;
 }
 
 interface SavedImageResult {
@@ -31,6 +33,46 @@ interface SavedImageResult {
   palette: string | null;
   created_at: number;
   kind: string;
+  vision_tags: string[];
+  ocr_text: string;
+}
+
+async function insertVisionData(db: Awaited<ReturnType<typeof getDb>>, imageId: string, visionTags: string[], ocrText: string) {
+  for (const tagName of visionTags) {
+    const normalized = tagName.trim().toLowerCase();
+    if (!normalized) continue;
+    await db.execute("INSERT OR IGNORE INTO tags (id, name) VALUES ($1, $2)", [crypto.randomUUID(), normalized]);
+    const rows = await db.select<{ id: string }[]>("SELECT id FROM tags WHERE name = $1", [normalized]);
+    if (rows[0]) {
+      await db.execute("INSERT OR IGNORE INTO image_tags (image_id, tag_id) VALUES ($1, $2)", [imageId, rows[0].id]);
+    }
+  }
+  // Always set (even "") so ocr_text IS NULL means "never processed"
+  await db.execute("UPDATE images SET ocr_text = $1 WHERE id = $2", [ocrText, imageId]);
+}
+
+export async function backfillVision(
+  images: Pick<Image, "id" | "thumb_path" | "kind" | "ocr_text">[],
+  onProgress?: (done: number, total: number) => void,
+  cancelRef?: { current: boolean },
+) {
+  const eligible = images.filter((img) => img.ocr_text === null && img.kind !== "video");
+  if (eligible.length === 0) return 0;
+  const db = await getDb();
+  for (let i = 0; i < eligible.length; i++) {
+    if (cancelRef?.current) break;
+    onProgress?.(i, eligible.length);
+    const img = eligible[i];
+    try {
+      const result = await invoke<{ tags: string[]; ocr_text: string }>("analyze_vision_item", { thumbPath: img.thumb_path });
+      await insertVisionData(db, img.id, result.tags, result.ocr_text);
+    } catch {
+      // mark as processed even on error so we don't retry forever
+      await db.execute("UPDATE images SET ocr_text = $1 WHERE id = $2", ["", img.id]);
+    }
+  }
+  onProgress?.(eligible.length, eligible.length);
+  return eligible.length;
 }
 
 async function getDb() {
@@ -136,13 +178,34 @@ export async function refreshThumbnails(
 
 function useImagesState() {
   const [images, setImages] = useState<Image[]>([]);
+  const [binImages, setBinImages] = useState<Image[]>([]);
 
   const load = useCallback(async () => {
     const db = await getDb();
+    const now = Date.now();
+    const ninetyDaysAgo = now - 90 * 24 * 60 * 60 * 1000;
+
+    // Auto-purge items deleted >90 days ago
+    const stale = await db.select<Image[]>(
+      "SELECT * FROM images WHERE deleted_at IS NOT NULL AND deleted_at < $1",
+      [ninetyDaysAgo]
+    );
+    for (const img of stale) {
+      await invoke("delete_image_files", { filePath: img.file_path, thumbPath: img.thumb_path }).catch(() => {});
+      await db.execute("DELETE FROM image_tags WHERE image_id = $1", [img.id]);
+      await db.execute("DELETE FROM collection_images WHERE image_id = $1", [img.id]);
+      await db.execute("DELETE FROM images WHERE id = $1", [img.id]);
+    }
+
     const rows = await db.select<Image[]>(
-      "SELECT * FROM images ORDER BY created_at DESC"
+      "SELECT * FROM images WHERE deleted_at IS NULL ORDER BY created_at DESC"
     );
     setImages(rows);
+
+    const binRows = await db.select<Image[]>(
+      "SELECT * FROM images WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC"
+    );
+    setBinImages(binRows);
   }, []);
 
   const saveBlob = useCallback(async (blob: Blob) => {
@@ -163,21 +226,12 @@ function useImagesState() {
       await db.execute(
         `INSERT INTO images (id, file_path, thumb_path, width, height, dominant_color, palette, created_at, updated_at, kind)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9)`,
-        [
-          saved.id,
-          saved.file_path,
-          saved.thumb_path,
-          saved.width,
-          saved.height,
-          saved.dominant_color,
-          saved.palette,
-          saved.created_at,
-          saved.kind,
-        ]
+        [saved.id, saved.file_path, saved.thumb_path, saved.width, saved.height, saved.dominant_color, saved.palette, saved.created_at, saved.kind]
       );
+      await insertVisionData(db, saved.id, saved.vision_tags, saved.ocr_text);
 
       setImages((prev) => [
-        { ...saved, source_url: null, title: null, notes: null, description: null },
+        { ...saved, source_url: null, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null },
         ...prev,
       ]);
       toastManager.add({ title: "Image saved", type: "success", timeout: 2500 });
@@ -199,21 +253,12 @@ function useImagesState() {
       await db.execute(
         `INSERT INTO images (id, file_path, thumb_path, width, height, dominant_color, palette, created_at, updated_at, kind)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9)`,
-        [
-          saved.id,
-          saved.file_path,
-          saved.thumb_path,
-          saved.width,
-          saved.height,
-          saved.dominant_color,
-          saved.palette,
-          saved.created_at,
-          saved.kind,
-        ]
+        [saved.id, saved.file_path, saved.thumb_path, saved.width, saved.height, saved.dominant_color, saved.palette, saved.created_at, saved.kind]
       );
+      await insertVisionData(db, saved.id, saved.vision_tags, saved.ocr_text);
 
       setImages((prev) => [
-        { ...saved, source_url: null, title: null, notes: null, description: null },
+        { ...saved, source_url: null, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null },
         ...prev,
       ]);
       toastManager.add({ title: saved.kind === "video" ? "Video saved" : "Image saved", type: "success", timeout: 2500 });
@@ -235,22 +280,12 @@ function useImagesState() {
       await db.execute(
         `INSERT INTO images (id, file_path, thumb_path, source_url, width, height, dominant_color, palette, created_at, updated_at, kind)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10)`,
-        [
-          saved.id,
-          saved.file_path,
-          saved.thumb_path,
-          url,
-          saved.width,
-          saved.height,
-          saved.dominant_color,
-          saved.palette,
-          saved.created_at,
-          saved.kind,
-        ]
+        [saved.id, saved.file_path, saved.thumb_path, url, saved.width, saved.height, saved.dominant_color, saved.palette, saved.created_at, saved.kind]
       );
+      await insertVisionData(db, saved.id, saved.vision_tags, saved.ocr_text);
 
       setImages((prev) => [
-        { ...saved, source_url: url, title: null, notes: null, description: null },
+        { ...saved, source_url: url, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null },
         ...prev,
       ]);
       toastManager.add({ title: "Image saved", type: "success", timeout: 2500 });
@@ -260,16 +295,75 @@ function useImagesState() {
     }
   }, []);
 
-  const deleteImage = useCallback(async (id: string, filePath: string, thumbPath: string) => {
+  const softDelete = useCallback(async (id: string) => {
     try {
       const db = await getDb();
-      await db.execute("DELETE FROM images WHERE id = $1", [id]);
-      await invoke("delete_image_files", { filePath, thumbPath });
-      setImages((prev) => prev.filter((img) => img.id !== id));
-      toastManager.add({ title: "Image deleted", type: "default", timeout: 2500 });
+      const now = Date.now();
+      await db.execute("UPDATE images SET deleted_at = $1 WHERE id = $2", [now, id]);
+      let moved: Image | undefined;
+      setImages((prev) => {
+        moved = prev.find((i) => i.id === id);
+        return prev.filter((i) => i.id !== id);
+      });
+      if (moved) {
+        setBinImages((prev) => [{ ...moved!, deleted_at: now }, ...prev]);
+      }
+      toastManager.add({ title: "Moved to Bin", type: "default", timeout: 2500 });
     } catch (err) {
-      console.error("[keep] deleteImage failed:", err);
+      console.error("[keep] softDelete failed:", err);
       toastManager.add({ title: "Failed to delete image", type: "error" });
+    }
+  }, []);
+
+  const restoreImage = useCallback(async (id: string) => {
+    try {
+      const db = await getDb();
+      await db.execute("UPDATE images SET deleted_at = NULL WHERE id = $1", [id]);
+      let restored: Image | undefined;
+      setBinImages((prev) => {
+        restored = prev.find((i) => i.id === id);
+        return prev.filter((i) => i.id !== id);
+      });
+      if (restored) {
+        setImages((prev) => [{ ...restored!, deleted_at: null }, ...prev].sort((a, b) => b.created_at - a.created_at));
+      }
+      toastManager.add({ title: "Restored", type: "success", timeout: 2500 });
+    } catch (err) {
+      console.error("[keep] restoreImage failed:", err);
+      toastManager.add({ title: "Failed to restore", type: "error" });
+    }
+  }, []);
+
+  const permanentDelete = useCallback(async (id: string, filePath: string, thumbPath: string) => {
+    try {
+      const db = await getDb();
+      await db.execute("DELETE FROM image_tags WHERE image_id = $1", [id]);
+      await db.execute("DELETE FROM collection_images WHERE image_id = $1", [id]);
+      await db.execute("DELETE FROM images WHERE id = $1", [id]);
+      await invoke("delete_image_files", { filePath, thumbPath }).catch(() => {});
+      setBinImages((prev) => prev.filter((i) => i.id !== id));
+      toastManager.add({ title: "Deleted forever", type: "default", timeout: 2500 });
+    } catch (err) {
+      console.error("[keep] permanentDelete failed:", err);
+      toastManager.add({ title: "Failed to delete", type: "error" });
+    }
+  }, []);
+
+  const emptyBin = useCallback(async () => {
+    try {
+      const db = await getDb();
+      const bin = await db.select<Image[]>("SELECT * FROM images WHERE deleted_at IS NOT NULL");
+      for (const img of bin) {
+        await invoke("delete_image_files", { filePath: img.file_path, thumbPath: img.thumb_path }).catch(() => {});
+        await db.execute("DELETE FROM image_tags WHERE image_id = $1", [img.id]);
+        await db.execute("DELETE FROM collection_images WHERE image_id = $1", [img.id]);
+        await db.execute("DELETE FROM images WHERE id = $1", [img.id]);
+      }
+      setBinImages([]);
+      toastManager.add({ title: "Bin emptied", type: "success", timeout: 2500 });
+    } catch (err) {
+      console.error("[keep] emptyBin failed:", err);
+      toastManager.add({ title: "Failed to empty bin", type: "error" });
     }
   }, []);
 
@@ -463,10 +557,14 @@ function useImagesState() {
 
   return {
     images,
+    binImages,
     saveBlob,
     savePath,
     saveUrl,
-    deleteImage,
+    softDelete,
+    restoreImage,
+    permanentDelete,
+    emptyBin,
     updateTitle,
     updateNotes,
     updateDescription,

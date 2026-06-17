@@ -1,4 +1,4 @@
-import { createContext, createElement, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, createElement, use, useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import Database from "@tauri-apps/plugin-sql";
 import type { Image } from "./use-images";
@@ -10,7 +10,7 @@ export interface Collection {
 }
 
 async function getDb() {
-  return Database.load("sqlite:mood.db");
+  return Database.load("sqlite:keep.db");
 }
 
 // ── internal state logic ───────────────────────────────────────────────────
@@ -158,7 +158,7 @@ export function CollectionsProvider({ children }: { children: ReactNode }) {
 }
 
 export function useCollections(): CollectionsState {
-  const ctx = useContext(CollectionsContext);
+  const ctx = use(CollectionsContext);
   if (!ctx) throw new Error("useCollections must be used inside <CollectionsProvider>");
   return ctx;
 }

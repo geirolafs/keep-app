@@ -1,5 +1,5 @@
 [package]
-name = "mood"
+name = "keep"
 version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]
@@ -11,7 +11,7 @@ edition = "2021"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "mood_lib"
+name = "keep_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -31,4 +31,12 @@ color-thief = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 base64 = "0.22"
 tauri-plugin-dialog = "2"
+arboard = "3"
+trash = "5"
+
+[profile.release.package."sqlx-macros"]
+opt-level = 0
+
+[profile.release.package."sqlx-macros-core"]
+opt-level = 0
 

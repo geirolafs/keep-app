@@ -1,10 +1,11 @@
-import { useEffect, useReducer, useRef } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { Toast } from "@base-ui/react/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastList } from "@/components/ui/toast-viewport";
 import { toastManager } from "@/lib/toast";
 import TopNav, { type Tab, type Sort, type TopNavHandle } from "@/components/TopNav";
-import Grid from "@/components/Grid";
+import Grid, { type GridHandle } from "@/components/Grid";
+import { CmdKDialog } from "@/components/CmdKDialog";
 import { useCollections, CollectionsProvider } from "@/hooks/useCollections";
 import { TagsProvider } from "@/hooks/use-tags";
 import { ImagesProvider } from "@/hooks/use-images";
@@ -19,6 +20,7 @@ type ViewState = {
 
 type ViewAction =
   | { type: "setTab"; tab: Tab }
+  | { type: "setTabAndSelect"; tab: Tab; selectedId: string }
   | { type: "setSelectedId"; id: string | null }
   | { type: "setSearchQuery"; query: string }
   | { type: "setSort"; sort: Sort }
@@ -28,6 +30,8 @@ function viewReducer(state: ViewState, action: ViewAction): ViewState {
   switch (action.type) {
     case "setTab":
       return { ...state, activeTab: action.tab, selectedId: null };
+    case "setTabAndSelect":
+      return { ...state, activeTab: action.tab, selectedId: action.selectedId };
     case "setSelectedId":
       return { ...state, selectedId: action.id };
     case "setSearchQuery":
@@ -49,6 +53,8 @@ function AppContent() {
   });
   const searchInputRef = useRef<HTMLInputElement>(null);
   const topNavRef = useRef<TopNavHandle>(null);
+  const gridRef = useRef<GridHandle>(null);
+  const [cmdKOpen, setCmdKOpen] = useState(false);
 
   const { createCollection } = useCollections();
 
@@ -59,6 +65,10 @@ function AppContent() {
   // Global keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setCmdKOpen(true);
+      }
       if ((e.metaKey || e.ctrlKey) && e.key === "f") {
         e.preventDefault();
         searchInputRef.current?.focus();
@@ -96,6 +106,7 @@ function AppContent() {
           onShuffle={() => dispatch({ type: "shuffle" })}
         />
         <Grid
+          ref={gridRef}
           activeTab={view.activeTab}
           sort={view.sort}
           searchQuery={view.searchQuery}
@@ -105,6 +116,16 @@ function AppContent() {
           shuffleSeed={view.shuffleSeed}
         />
       </div>
+      <CmdKDialog
+        open={cmdKOpen}
+        onClose={() => setCmdKOpen(false)}
+        onOpenImage={(id) => {
+          dispatch({ type: "setTab", tab: "all" });
+          gridRef.current?.openImage(id);
+        }}
+        onOpenCollection={(id) => dispatch({ type: "setTabAndSelect", tab: "collections", selectedId: id })}
+        onOpenTag={(id) => dispatch({ type: "setTabAndSelect", tab: "tags", selectedId: id })}
+      />
       <ToastList />
     </TooltipProvider>
   );

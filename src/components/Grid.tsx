@@ -9,7 +9,9 @@ import {
 } from "@remixicon/react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useImperativeHandle, useReducer, useRef, useState } from "react";
+import type { Ref } from "react";
+import { BinView } from "@/components/BinView";
 import { LazyImage } from "@/components/LazyImage";
 import { Lightbox } from "@/components/Lightbox";
 import type { Sort, Tab } from "@/components/TopNav";
@@ -130,6 +132,10 @@ function getExt(path: string) {
 	return path.split(".").pop()?.toLowerCase() ?? "";
 }
 
+export interface GridHandle {
+	openImage: (id: string) => void;
+}
+
 interface GridProps {
 	activeTab?: Tab;
 	sort?: Sort;
@@ -138,6 +144,7 @@ interface GridProps {
 	onSelectId?: (id: string | null) => void;
 	onCreateCollection?: () => void;
 	shuffleSeed?: number;
+	ref?: Ref<GridHandle>;
 }
 
 export default function Grid({
@@ -148,12 +155,13 @@ export default function Grid({
 	onSelectId,
 	onCreateCollection,
 	shuffleSeed = 0,
+	ref,
 }: GridProps) {
 	const {
 		images: allImages,
 		imgSrc,
 		savePath,
-		deleteImage,
+		softDelete,
 		updateTitle,
 		updateNotes,
 		updateDescription,
@@ -179,6 +187,9 @@ export default function Grid({
 		renaming,
 		renameValue,
 	} = gridUI;
+	useImperativeHandle(ref, () => ({
+		openImage: (id: string) => dispatch({ type: "setOpenId", id }),
+	}));
 	const renameInputRef = useRef<HTMLInputElement>(null);
 	const [visibleCount, setVisibleCount] = useState(50);
 	const sentinelRef = useRef<HTMLDivElement>(null);
@@ -236,6 +247,7 @@ export default function Grid({
 					img.title?.toLowerCase().includes(q) ||
 					img.source_url?.toLowerCase().includes(q) ||
 					img.description?.toLowerCase().includes(q) ||
+					img.ocr_text?.toLowerCase().includes(q) ||
 					(imageTagsMap.get(img.id) ?? []).some((t) =>
 						t.name.toLowerCase().includes(q),
 					),
@@ -361,7 +373,7 @@ export default function Grid({
 		file_path: string;
 		thumb_path: string;
 	}) => {
-		deleteImage(img.id, img.file_path, img.thumb_path);
+		softDelete(img.id);
 		const idx = filteredImages.findIndex((i) => i.id === img.id);
 		const newLen = filteredImages.length - 1;
 		if (newLen <= 0) {
@@ -385,17 +397,11 @@ export default function Grid({
 	}, [selectedIds]);
 
 	const doBatchDelete = useCallback(async () => {
-		const imageMap = new Map(allImages.map((img) => [img.id, img]));
 		await Promise.all(
-			[...selectedIds].map((id) => {
-				const img = imageMap.get(id);
-				return img
-					? deleteImage(id, img.file_path, img.thumb_path)
-					: Promise.resolve();
-			}),
+			[...selectedIds].map((id) => softDelete(id)),
 		);
 		dispatch({ type: "clearSelection" });
-	}, [selectedIds, allImages, deleteImage]);
+	}, [selectedIds, softDelete]);
 
 	const handleBatchAddToCollection = async (collectionId: string) => {
 		await Promise.all(
@@ -782,11 +788,14 @@ export default function Grid({
 						playsInline
 						className="block w-full object-cover"
 						draggable={false}
-						onMouseEnter={(e) => {
+						onLoadedData={(e) => {
 							e.currentTarget.playbackRate = 0.25;
 						}}
-						onMouseLeave={(e) => {
+						onMouseEnter={(e) => {
 							e.currentTarget.playbackRate = 1;
+						}}
+						onMouseLeave={(e) => {
+							e.currentTarget.playbackRate = 0.25;
 						}}
 					/>
 				) : (
@@ -841,6 +850,7 @@ export default function Grid({
 
 	// Determine which content to render
 	const renderContent = () => {
+		if (activeTab === "bin") return <BinView />;
 		if (activeTab === "collections" && !selectedId)
 			return renderCollectionGrid();
 		if (activeTab === "tags" && !selectedId) return renderTagGrid();
