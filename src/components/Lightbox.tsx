@@ -296,7 +296,6 @@ export function Lightbox({
     if (!destPath) return;
     try {
       await invoke("export_original", { filePath: image.file_path, destPath });
-      toastManager.add({ title: "Exported", type: "success" });
     } catch {
       toastManager.add({ title: "Export failed", type: "error" });
     }
@@ -629,7 +628,7 @@ export function Lightbox({
                     e.target.value = "";
                   }
                 }}
-                className="bg-transparent py-0.5 text-xs text-muted-foreground outline-none transition-colors hover:text-foreground cursor-pointer"
+                className="bg-transparent py-0.5 text-xs text-muted-foreground outline-none transition-colors hover:text-foreground"
               >
                 <option value="" disabled>+ add</option>
                 {unassignedCollections.map((c) => (

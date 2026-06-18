@@ -2,6 +2,7 @@ import { RiSearchLine, RiSortAsc, RiSortDesc, RiSettings3Line, RiEyeLine, RiEyeO
 import { devSaveExample, devLoadExample, devResetAll, refreshThumbnails, backfillVision, useImages } from "@/hooks/use-images";
 import { useTags } from "@/hooks/use-tags";
 import { invoke } from "@tauri-apps/api/core";
+import { sendNotification } from "@tauri-apps/plugin-notification";
 import { toastManager } from "@/lib/toast";
 import {
 	type Ref,
@@ -18,7 +19,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useSettings, type AnalyzeMode } from "@/hooks/use-settings";
 
 export type Tab = "all" | "collections" | "tags" | "bin";
-export type Sort = "newest" | "oldest";
+export type Sort = "newest" | "oldest" | "name-az" | "name-za";
 
 export interface TopNavHandle {
 	startNaming: () => void;
@@ -183,13 +184,12 @@ function TopNav({
 		visionCancelRef.current = false;
 		const unindexed = allImages.filter((img) => img.ocr_text === null && img.kind !== "video");
 		if (unindexed.length === 0) {
-			toastManager.add({ title: "All images already indexed", type: "default", timeout: 2500 });
 			return;
 		}
 		settingsDispatch({ type: "setVisionProgress", progress: { done: 0, total: unindexed.length } });
 		const count = await backfillVision(allImages, (done, total) => settingsDispatch({ type: "setVisionProgress", progress: { done, total } }), visionCancelRef);
 		settingsDispatch({ type: "setVisionProgress", progress: null });
-		toastManager.add({ title: `Vision scan done — ${count} images indexed`, type: "success", timeout: 3000 });
+		try { sendNotification({ title: "KEEP", body: `Vision indexed ${count} images` }); } catch {}
 		setTimeout(() => window.location.reload(), 1500);
 	};
 
@@ -206,6 +206,7 @@ function TopNav({
 		const model = (await getSetting("model")) ?? "anthropic/claude-sonnet-4-6";
 		analyzeCancelRef.current = false;
 		settingsDispatch({ type: "setAnalyzeProgress", progress: { done: 0, total: allImages.length } });
+		let analyzedCount = 0;
 
 		for (let i = 0; i < allImages.length; i++) {
 			if (analyzeCancelRef.current) break;
@@ -221,6 +222,7 @@ function TopNav({
 					model,
 				});
 				if (result && !analyzeCancelRef.current) {
+					analyzedCount++;
 					await Promise.all([
 						updateTitle(img.id, result.title),
 						updateDescription(img.id, result.description),
@@ -238,7 +240,7 @@ function TopNav({
 
 		settingsDispatch({ type: "setAnalyzeProgress", progress: null });
 		if (!analyzeCancelRef.current) {
-			toastManager.add({ title: "Analysis complete", type: "success", timeout: 3000 });
+			try { sendNotification({ title: "KEEP", body: `Analyzed ${analyzedCount} image${analyzedCount !== 1 ? "s" : ""}` }); } catch {}
 		}
 	};
 
@@ -300,15 +302,16 @@ function TopNav({
 				<div className="flex items-center gap-2">
 					<button
 						type="button"
-						onClick={() => onSortChange(sort === "newest" ? "oldest" : "newest")}
-						title={sort === "newest" ? "Newest first" : "Oldest first"}
-						className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+						onClick={() => onSortChange(sort === "newest" ? "oldest" : sort === "oldest" ? "name-az" : sort === "name-az" ? "name-za" : "newest")}
+						title={sort === "newest" ? "Newest first" : sort === "oldest" ? "Oldest first" : sort === "name-az" ? "Name A→Z" : "Name Z→A"}
+						className="flex h-7 items-center gap-1 px-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
 					>
-						{sort === "newest" ? (
+						{sort === "newest" || sort === "name-za" ? (
 							<RiSortDesc className="size-4" />
 						) : (
 							<RiSortAsc className="size-4" />
 						)}
+						<span className="text-xs font-medium">{sort === "name-az" || sort === "name-za" ? "Name" : "Date"}</span>
 					</button>
 					<span className="text-xs font-semibold tabular-nums" style={{ color: "#79716b" }}>{numCols}</span>
 					<input

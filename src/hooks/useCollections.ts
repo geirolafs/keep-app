@@ -2,7 +2,6 @@ import { createContext, createElement, use, useCallback, useEffect, useState } f
 import type { ReactNode } from "react";
 import Database from "@tauri-apps/plugin-sql";
 import type { Image } from "./use-images";
-import { toastManager } from "@/lib/toast";
 
 export interface Collection {
   id: string;
@@ -52,7 +51,6 @@ function useCollectionsState() {
     setCollections((prev) =>
       [...prev, created].sort((a, b) => a.name.localeCompare(b.name))
     );
-    toastManager.add({ title: `Collection "${created.name}" created`, type: "success", timeout: 2500 });
     return created;
   }, []);
 
@@ -69,7 +67,6 @@ function useCollectionsState() {
       }
       return next;
     });
-    toastManager.add({ title: "Collection deleted", type: "default", timeout: 2500 });
   }, []);
 
   const renameCollection = useCallback(async (id: string, name: string) => {
@@ -89,7 +86,6 @@ function useCollectionsState() {
       }
       return next;
     });
-    toastManager.add({ title: `Renamed to "${trimmed}"`, type: "success", timeout: 2500 });
   }, []);
 
   const addToCollection = useCallback(async (collectionId: string, imageId: string) => {

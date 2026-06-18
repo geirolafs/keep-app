@@ -127,7 +127,7 @@ export function BinView() {
               <div
                 key={img.id}
                 className={[
-                  "group relative overflow-hidden cursor-pointer rounded-sm border-2 transition-colors",
+                  "group relative overflow-hidden rounded-sm border-2 transition-colors",
                   selected ? "border-primary" : "border-transparent",
                 ].join(" ")}
                 onClick={(e) => toggleSelect(img.id, idx, e)}

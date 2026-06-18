@@ -4,6 +4,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import Database from "@tauri-apps/plugin-sql";
 import { toastManager } from "@/lib/toast";
+import { sendNotification } from "@tauri-apps/plugin-notification";
+
+export type PendingItem = { id: string; label: string }
 
 export interface Image {
   id: string;
@@ -126,7 +129,6 @@ export async function devSaveExample(n: number) {
       tags, image_tags: imageTags, collections, collection_images: collectionImages,
     };
     await invoke("save_example_snapshot", { n, snapshotJson: JSON.stringify(snapshot) });
-    toastManager.add({ title: `Example ${n} saved (${imgs.length} images)`, type: "success", timeout: 3000 });
   } catch (err) {
     console.error("[keep] saveExample failed:", err);
     toastManager.add({ title: "Failed to save example", type: "error" });
@@ -182,7 +184,7 @@ export async function refreshThumbnails(
       count += n;
     }
     onProgress?.(eligible.length, eligible.length);
-    toastManager.add({ title: `Refreshed ${count} thumbnail${count !== 1 ? "s" : ""}`, type: "success", timeout: 3000 });
+    try { sendNotification({ title: "KEEP", body: `Refreshed ${count} thumbnails` }); } catch {}
     window.location.reload();
   } catch (err) {
     console.error("[keep] refreshThumbnails failed:", err);
@@ -193,6 +195,16 @@ export async function refreshThumbnails(
 function useImagesState() {
   const [images, setImages] = useState<Image[]>([]);
   const [binImages, setBinImages] = useState<Image[]>([]);
+  const [pendingItems, setPendingItems] = useState<PendingItem[]>([]);
+
+  const addPending = (label: string): string => {
+    const id = crypto.randomUUID();
+    setPendingItems((prev) => [{ id, label }, ...prev]);
+    return id;
+  };
+  const removePending = (id: string) => {
+    setPendingItems((prev) => prev.filter((p) => p.id !== id));
+  };
 
   const load = useCallback(async () => {
     const db = await getDb();
@@ -223,6 +235,7 @@ function useImagesState() {
   }, []);
 
   const saveBlob = useCallback(async (blob: Blob) => {
+    const tempId = addPending("Saving image…");
     try {
       console.log("[keep] paste detected", blob.type, blob.size);
       const ext = blob.type.split("/")[1] ?? "png";
@@ -248,14 +261,17 @@ function useImagesState() {
         { ...saved, source_url: null, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null, post_meta: null },
         ...prev,
       ]);
-      toastManager.add({ title: "Image saved", type: "success", timeout: 2500 });
     } catch (err) {
       console.error("[keep] saveBlob failed:", err);
       toastManager.add({ title: "Failed to save image", type: "error" });
+    } finally {
+      removePending(tempId);
     }
   }, []);
 
   const savePath = useCallback(async (path: string) => {
+    const label = path.split("/").pop() ?? "Saving…";
+    const tempId = addPending(label);
     try {
       console.log("[keep] savePath:", path);
       const saved = await invoke<SavedImageResult>("save_image_from_path", {
@@ -275,14 +291,17 @@ function useImagesState() {
         { ...saved, source_url: null, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null, post_meta: null },
         ...prev,
       ]);
-      toastManager.add({ title: saved.kind === "video" ? "Video saved" : "Image saved", type: "success", timeout: 2500 });
     } catch (err) {
       console.error("[keep] savePath failed:", err);
       toastManager.add({ title: "Failed to save image", type: "error" });
+    } finally {
+      removePending(tempId);
     }
   }, []);
 
   const saveUrl = useCallback(async (url: string) => {
+    const label = url.length > 60 ? url.slice(0, 60) + "…" : url;
+    const tempId = addPending(label);
     try {
       console.log("[keep] saveUrl:", url);
       const saved = await invoke<SavedImageResult>("save_image_from_url", {
@@ -302,14 +321,17 @@ function useImagesState() {
         { ...saved, source_url: url, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null, post_meta: null },
         ...prev,
       ]);
-      toastManager.add({ title: "Image saved", type: "success", timeout: 2500 });
     } catch (err) {
       console.error("[keep] saveUrl failed:", err);
       toastManager.add({ title: "Failed to save image", type: "error" });
+    } finally {
+      removePending(tempId);
     }
   }, []);
 
   const saveLink = useCallback(async (url: string) => {
+    const label = url.length > 60 ? url.slice(0, 60) + "…" : url;
+    const tempId = addPending(label);
     try {
       const saved = await invoke<SavedLinkResult>("save_link", { url });
       const db = await getDb();
@@ -324,10 +346,11 @@ function useImagesState() {
         { ...saved, source_url: url, title, notes: null, description: null, ocr_text: null, deleted_at: null, kind: "link", post_meta: saved.post_meta },
         ...prev,
       ]);
-      toastManager.add({ title: "Link saved", type: "success", timeout: 2500 });
     } catch (err) {
       console.error("[keep] saveLink failed:", err);
       toastManager.add({ title: "Failed to save link", type: "error" });
+    } finally {
+      removePending(tempId);
     }
   }, []);
 
@@ -344,7 +367,6 @@ function useImagesState() {
       if (moved) {
         setBinImages((prev) => [{ ...moved!, deleted_at: now }, ...prev]);
       }
-      toastManager.add({ title: "Moved to Bin", type: "default", timeout: 2500 });
     } catch (err) {
       console.error("[keep] softDelete failed:", err);
       toastManager.add({ title: "Failed to delete image", type: "error" });
@@ -363,7 +385,6 @@ function useImagesState() {
       if (restored) {
         setImages((prev) => [{ ...restored!, deleted_at: null }, ...prev].sort((a, b) => b.created_at - a.created_at));
       }
-      toastManager.add({ title: "Restored", type: "success", timeout: 2500 });
     } catch (err) {
       console.error("[keep] restoreImage failed:", err);
       toastManager.add({ title: "Failed to restore", type: "error" });
@@ -378,7 +399,6 @@ function useImagesState() {
       await db.execute("DELETE FROM images WHERE id = $1", [id]);
       await invoke("delete_image_files", { filePath, thumbPath }).catch(() => {});
       setBinImages((prev) => prev.filter((i) => i.id !== id));
-      toastManager.add({ title: "Deleted forever", type: "default", timeout: 2500 });
     } catch (err) {
       console.error("[keep] permanentDelete failed:", err);
       toastManager.add({ title: "Failed to delete", type: "error" });
@@ -396,7 +416,6 @@ function useImagesState() {
         await db.execute("DELETE FROM images WHERE id = $1", [img.id]);
       }
       setBinImages([]);
-      toastManager.add({ title: "Bin emptied", type: "success", timeout: 2500 });
     } catch (err) {
       console.error("[keep] emptyBin failed:", err);
       toastManager.add({ title: "Failed to empty bin", type: "error" });
@@ -501,7 +520,6 @@ function useImagesState() {
       };
 
       await invoke("save_example_snapshot", { n, snapshotJson: JSON.stringify(snapshot) });
-      toastManager.add({ title: `Example ${n} saved (${imgs.length} images)`, type: "success", timeout: 3000 });
     } catch (err) {
       console.error("[keep] saveExample failed:", err);
       toastManager.add({ title: "Failed to save example", type: "error" });
@@ -597,6 +615,7 @@ function useImagesState() {
   return {
     images,
     binImages,
+    pendingItems,
     saveBlob,
     savePath,
     saveUrl,

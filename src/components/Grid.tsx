@@ -4,6 +4,7 @@ import {
 	RiClipboardLine,
 	RiFolderOpenLine,
 	RiImageAddLine,
+	RiLoader4Line,
 	RiPriceTag2Line,
 	RiUploadLine,
 	RiTwitterLine,
@@ -17,7 +18,7 @@ import { LazyImage } from "@/components/LazyImage";
 import { Lightbox } from "@/components/Lightbox";
 import type { Sort, Tab } from "@/components/TopNav";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { useImages } from "@/hooks/use-images";
+import { useImages, type PendingItem } from "@/hooks/use-images";
 import { useTags } from "@/hooks/use-tags";
 import { useCollections } from "@/hooks/useCollections";
 import { cn } from "@/lib/utils";
@@ -166,6 +167,7 @@ export default function Grid({
 }: GridProps) {
 	const {
 		images: allImages,
+		pendingItems,
 		imgSrc,
 		savePath,
 		softDelete,
@@ -252,11 +254,19 @@ export default function Grid({
 			const order = shuffleOrderRef.current;
 			imgs.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
 		} else {
-			imgs.sort((a, b) =>
-				sort === "newest"
-					? (b.created_at ?? 0) - (a.created_at ?? 0)
-					: (a.created_at ?? 0) - (b.created_at ?? 0),
-			);
+			if (sort === "name-az" || sort === "name-za") {
+				imgs.sort((a, b) => {
+					const na = (a.title ?? a.file_path ?? "").toLowerCase();
+					const nb = (b.title ?? b.file_path ?? "").toLowerCase();
+					return sort === "name-az" ? na.localeCompare(nb) : nb.localeCompare(na);
+				});
+			} else {
+				imgs.sort((a, b) =>
+					sort === "newest"
+						? (b.created_at ?? 0) - (a.created_at ?? 0)
+						: (a.created_at ?? 0) - (b.created_at ?? 0),
+				);
+			}
 		}
 
 		return imgs;
@@ -468,9 +478,9 @@ export default function Grid({
 	const contextMenuPopupClass =
 		"z-50 min-w-[140px] rounded-lg border border-border bg-popover p-1 shadow-lg text-sm text-popover-foreground";
 	const contextMenuItemClass =
-		"flex items-center px-3 py-1.5 rounded-md cursor-pointer hover:bg-accent hover:text-accent-foreground outline-none select-none";
+		"flex items-center px-3 py-1.5 rounded-md hover:bg-accent hover:text-accent-foreground outline-none select-none";
 	const contextMenuItemDestructiveClass =
-		"flex items-center px-3 py-1.5 rounded-md cursor-pointer text-destructive hover:bg-destructive/10 outline-none select-none";
+		"flex items-center px-3 py-1.5 rounded-md text-destructive hover:bg-destructive/10 outline-none select-none";
 
 	// Collection grid view
 	const renderCollectionGrid = () => (
@@ -500,7 +510,7 @@ export default function Grid({
 						return (
 							<ContextMenu.Root key={col.id}>
 								<ContextMenu.Trigger
-									className="overflow-hidden cursor-pointer relative aspect-square bg-muted hover:opacity-90 transition-opacity outline-none"
+									className="overflow-hidden relative aspect-square bg-muted hover:opacity-90 transition-opacity outline-none"
 									onClick={() => onSelectId?.(col.id)}
 									tabIndex={0}
 									onKeyDown={(e) => e.key === "Enter" && onSelectId?.(col.id)}
@@ -730,20 +740,41 @@ export default function Grid({
 		}
 
 		const visibleImages = filteredImages.slice(0, visibleCount);
+		const allDisplayItems: (PendingItem | (typeof visibleImages)[0])[] = [
+			...pendingItems,
+			...visibleImages,
+		];
 
 		// Distribute items into columns sequentially (same order as CSS columns)
-		const perCol = Math.ceil(visibleImages.length / numCols);
+		const perCol = Math.ceil(allDisplayItems.length / numCols);
 		const cols = Array.from({ length: numCols }, (_, i) =>
-			visibleImages.slice(i * perCol, (i + 1) * perCol),
+			allDisplayItems.slice(i * perCol, (i + 1) * perCol),
 		);
 
-		const renderCard = (img: (typeof visibleImages)[0]) => (
+		const renderCard = (item: PendingItem | (typeof visibleImages)[0]) => {
+			if (!("file_path" in item)) {
+				return (
+					<div
+						key={item.id}
+						className="relative overflow-hidden rounded-sm bg-muted animate-pulse w-full aspect-square"
+					>
+						<div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-3">
+							<RiLoader4Line className="size-5 text-muted-foreground animate-spin" />
+							<span className="text-xs text-muted-foreground text-center line-clamp-2 leading-tight">
+								{item.label}
+							</span>
+						</div>
+					</div>
+				);
+			}
+			const img = item;
+			return (
 			<button
 				type="button"
 				key={img.id}
 				aria-label={img.title ?? "Image"}
 				className={cn(
-					"group overflow-hidden relative cursor-pointer outline-none w-full text-left",
+					"group overflow-hidden relative outline-none w-full text-left",
 					selectedIds.has(img.id) &&
 						"ring-2 ring-primary ring-offset-2 ring-offset-background",
 				)}
@@ -848,7 +879,8 @@ export default function Grid({
 					</div>
 				)}
 			</button>
-		);
+			);
+		};
 
 		return (
 			<div ref={masonryRef} className="flex-1 overflow-y-auto p-4">

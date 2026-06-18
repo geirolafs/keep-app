@@ -1,7 +1,6 @@
 import { createContext, createElement, use, useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import Database from "@tauri-apps/plugin-sql";
-import { toastManager } from "@/lib/toast";
 
 export interface Tag {
   id: string;
@@ -115,7 +114,6 @@ function useTagsState() {
       }
       return next;
     });
-    toastManager.add({ title: "Tag deleted", type: "default", timeout: 2500 });
   }, []);
 
   const renameTag = useCallback(async (tagId: string, name: string) => {
@@ -135,7 +133,6 @@ function useTagsState() {
       }
       return next;
     });
-    toastManager.add({ title: `Tag renamed to "${trimmed}"`, type: "success", timeout: 2500 });
   }, []);
 
   const getTagCounts = useCallback((): TagWithCount[] => {
