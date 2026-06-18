@@ -260,7 +260,7 @@ ALTER TABLE images ADD COLUMN post_meta TEXT;
 - [ ] Multi-image counter badge (`1/4`) on grid cards with multiple images
 
 #### Distribution
-- [ ] Bundle `libheif.dylib` alongside `.app` (Tauri bundler `externalBin` or library config)
+- [x] Bundle `libheif.dylib` alongside `.app` — `scripts/bundle-dylibs.sh` (dylibbundler); `bun run release` builds + bundles all non-system dylibs into `Contents/Frameworks/`
 
 ---
 

@@ -8,7 +8,8 @@
     "browser": "VITE_BROWSER=true vite --open",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "release": "bun tauri build && bun scripts/bundle-dylibs.sh"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

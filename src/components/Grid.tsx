@@ -482,11 +482,11 @@ export default function Grid({
 	const contextMenuItemDestructiveClass =
 		"flex items-center px-3 py-1.5 rounded-md text-destructive hover:bg-destructive/10 outline-none select-none";
 
-	const FAN_SLOTS = [
-		{ rotate: -30, align: "end" as const },
-		{ rotate: -15, align: "start" as const },
-		{ rotate: 15,  align: "start" as const },
-		{ rotate: 30,  align: "end" as const },
+	const FAN_SLOTS: { rotate: number; align: "center" | "start" | "end" }[] = [
+		{ rotate: -30, align: "center" },
+		{ rotate: -15, align: "start" },
+		{ rotate: 15,  align: "start" },
+		{ rotate: 30,  align: "center" },
 	];
 
 	// Collection grid view
@@ -525,17 +525,17 @@ export default function Grid({
 									onKeyDown={(e) => e.key === "Enter" && onSelectId?.(col.id)}
 								>
 									{/* fan of images */}
-									<div className="absolute inset-0 flex items-center justify-center">
-										<div className="flex items-stretch h-[55%]">
+									<div className="absolute inset-0 flex items-center justify-center overflow-hidden">
+										<div className="flex items-stretch justify-center w-full h-[55%]">
 											{activeSlots.map((slot, i) => (
 												<div
 													key={i}
-													className={`shrink-0 w-[38%] mr-[-22%] flex flex-col drop-shadow-[0_6px_12px_rgba(0,0,0,0.3)] ${slot.align === "end" ? "justify-end" : "justify-start"}`}
+													className={`shrink-0 w-[40%] mr-[-26%] last:mr-0 flex flex-col drop-shadow-[0_6px_12px_rgba(0,0,0,0.3)] ${slot.align === "end" ? "justify-end" : slot.align === "center" ? "justify-center" : "justify-start"}`}
 												>
 													{thumbs[i] && (
 														<div
 															style={{ transform: `rotate(${slot.rotate}deg)` }}
-															className="w-[70%] mx-auto aspect-[3/4] overflow-hidden"
+															className="w-[65%] mx-auto aspect-[3/4] overflow-hidden"
 														>
 															<img
 																src={imgSrc(thumbs[i])}
