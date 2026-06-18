@@ -937,6 +937,13 @@ fn trash_files(file_path: String, thumb_path: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn get_file_size(file_path: String) -> Result<u64, String> {
+    std::fs::metadata(&file_path)
+        .map(|m| m.len())
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let migrations = vec![
@@ -1052,6 +1059,7 @@ pub fn run() {
             copy_image_to_clipboard,
             trash_files,
             save_link,
+            get_file_size,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

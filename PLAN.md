@@ -123,6 +123,8 @@ Add support for additional file formats beyond the current `png | jpg | jpeg | g
 - [x] **Refresh Thumbnails**: `refresh_thumbnails(items)` Rust command; JS loops per-image calling with single-item slice for `x of y` progress; skips SVG/GIF/video (thumb = file). Button in Settings → Developer section.
 
 #### Grid
+- [x] **Collection fan cards**: replaced single-cover-image+overlay card with a white card (border, no overlay); up to 4 latest thumbs shown as a fanned spread of rotated images (slots at -30°/-15°/+15°/+30°, overlapping with negative margin, drop shadow); fewer images fill from the rightmost slot; name top-left, count bottom-right. `getCollectionThumbs()` helper added to `useCollections`.
+- [x] **File size in lightbox**: `get_file_size` Rust command (fs::metadata); fetched on image open; displayed as `· 1.4 MB` / `· 842 KB` appended to the `W × H · EXT` line.
 - [x] **Masonry alignment fix**: replaced CSS `columns` (which has browser balancing alignment bugs) with explicit flex columns. `ResizeObserver` on container drives `numCols` state (2/3/4/5 at same breakpoints). Items distributed round-robin across columns (item 0 → col 0, item 1 → col 1, …) so the top row reads left→right newest-first. Each column is `flex flex-col gap-3 items-start`.
 - [x] **Grid polish**: removed `rounded-lg` from cards; removed `outline` focus ring; `display: block` on img/video eliminates inline baseline descender gap.
 - [x] **Column count slider**: 2–12 columns; persisted to `settings` table (`col_count`). Range input in Grid toolbar; `ResizeObserver` auto-breakpoints still fire when no manual preference is set (`manualColsRef` guard).
@@ -377,6 +379,7 @@ export_original(file_path, dest_path)           -- copy bytes to user-chosen pat
 copy_image_to_clipboard(file_path)              -- decode → RGBA → macOS clipboard via arboard
 generate_prompt(thumb_path, api_key, model)     -> String  -- Midjourney/DALL-E/Flux style prompt via google/gemini-2.5-flash
 save_link(url)                                  -> SavedLink  -- og: scrape + yt-dlp for tweets; kind='link'
+get_file_size(file_path)                        -> u64        -- fs::metadata().len(); used in lightbox
 ```
 
 ---

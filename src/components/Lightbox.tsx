@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -136,6 +136,7 @@ export function Lightbox({
   });
   const { titleEditing, titleValue, notesValue, descriptionValue, tagInput, creatingCol, newColInput, analyzing, promptValue, generatingPrompt } = edit;
   const tagInputRef = useRef<HTMLInputElement>(null);
+  const [fileSize, setFileSize] = useState<number | null>(null);
 
   const image = currentIndex !== null ? images[currentIndex] : null;
 
@@ -148,6 +149,10 @@ export function Lightbox({
         notes: image.notes ?? "",
         description: image.description ?? "",
       });
+      setFileSize(null);
+      invoke<number>("get_file_size", { filePath: image.file_path })
+        .then(setFileSize)
+        .catch(() => {});
     }
   }, [currentIndex, image?.id]);
 
@@ -692,6 +697,7 @@ export function Lightbox({
           {(image.width > 0 || image.height > 0) && (
             <p className="mb-0.5">
               {image.width} × {image.height} · {image.file_path.split(".").pop()?.toUpperCase()}
+              {fileSize != null && ` · ${fileSize >= 1_048_576 ? `${(fileSize / 1_048_576).toFixed(1)} MB` : `${Math.round(fileSize / 1024)} KB`}`}
             </p>
           )}
           <p>{date}</p>

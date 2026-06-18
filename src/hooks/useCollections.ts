@@ -119,6 +119,11 @@ function useCollectionsState() {
     return images.find((img) => ids.has(img.id)) ?? null;
   }, [getCollectionImageIds]);
 
+  const getCollectionThumbs = useCallback((collectionId: string, images: Image[], max = 4): string[] => {
+    const ids = getCollectionImageIds(collectionId);
+    return images.filter((img) => ids.has(img.id)).slice(0, max).map((img) => img.thumb_path);
+  }, [getCollectionImageIds]);
+
   const refreshImageCollections = useCallback(async () => {
     await loadImageCollections();
   }, [loadImageCollections]);
@@ -138,6 +143,7 @@ function useCollectionsState() {
     removeFromCollection,
     getCollectionImageIds,
     getCollectionCover,
+    getCollectionThumbs,
     refreshImageCollections,
   };
 }

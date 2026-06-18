@@ -179,7 +179,7 @@ export default function Grid({
 	const {
 		collections,
 		getCollectionImageIds,
-		getCollectionCover,
+		getCollectionThumbs,
 		deleteCollection,
 		renameCollection,
 		addToCollection,
@@ -482,6 +482,13 @@ export default function Grid({
 	const contextMenuItemDestructiveClass =
 		"flex items-center px-3 py-1.5 rounded-md text-destructive hover:bg-destructive/10 outline-none select-none";
 
+	const FAN_SLOTS = [
+		{ rotate: -30, align: "end" as const },
+		{ rotate: -15, align: "start" as const },
+		{ rotate: 15,  align: "start" as const },
+		{ rotate: 30,  align: "end" as const },
+	];
+
 	// Collection grid view
 	const renderCollectionGrid = () => (
 		<div className="flex-1 overflow-y-auto p-4">
@@ -505,57 +512,67 @@ export default function Grid({
 			) : (
 				<div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
 					{collections.map((col) => {
-						const cover = getCollectionCover(col.id, allImages);
 						const ids = getCollectionImageIds(col.id);
+						const thumbs = getCollectionThumbs(col.id, allImages, 4);
+						const slotCount = Math.min(ids.size, 4);
+						const activeSlots = FAN_SLOTS.slice(FAN_SLOTS.length - slotCount);
 						return (
 							<ContextMenu.Root key={col.id}>
 								<ContextMenu.Trigger
-									className="overflow-hidden relative aspect-square bg-muted hover:opacity-90 transition-opacity outline-none"
+									className="relative aspect-square bg-card border border-border overflow-hidden hover:opacity-90 transition-opacity outline-none"
 									onClick={() => onSelectId?.(col.id)}
 									tabIndex={0}
 									onKeyDown={(e) => e.key === "Enter" && onSelectId?.(col.id)}
 								>
-									{cover ? (
-										<img
-											src={imgSrc(cover.thumb_path)}
-											alt={col.name}
-											className="w-full h-full object-cover"
-											draggable={false}
+									{/* fan of images */}
+									<div className="absolute inset-0 flex items-center justify-center">
+										<div className="flex items-stretch h-[55%]">
+											{activeSlots.map((slot, i) => (
+												<div
+													key={i}
+													className={`shrink-0 w-[38%] mr-[-22%] flex flex-col drop-shadow-[0_6px_12px_rgba(0,0,0,0.3)] ${slot.align === "end" ? "justify-end" : "justify-start"}`}
+												>
+													{thumbs[i] && (
+														<div
+															style={{ transform: `rotate(${slot.rotate}deg)` }}
+															className="w-[70%] mx-auto aspect-[3/4] overflow-hidden"
+														>
+															<img
+																src={imgSrc(thumbs[i])}
+																alt=""
+																draggable={false}
+																className="w-full h-full object-cover pointer-events-none"
+															/>
+														</div>
+													)}
+												</div>
+											))}
+										</div>
+									</div>
+									{/* name */}
+									{renaming?.type === "collection" && renaming.id === col.id ? (
+										<input
+											aria-label="Rename collection"
+											ref={renameInputRef}
+											value={renameValue}
+											onChange={(e) => dispatch({ type: "setRenameValue", value: e.target.value })}
+											onKeyDown={(e) => {
+												if (e.key === "Enter") commitRename();
+												if (e.key === "Escape") dispatch({ type: "cancelRename" });
+											}}
+											onBlur={commitRename}
+											onClick={(e) => e.stopPropagation()}
+											className="absolute top-3 left-3 right-10 bg-transparent font-semibold text-sm outline-none border-b border-foreground/30 z-10"
 										/>
 									) : (
-										<div className="w-full h-full bg-muted" />
-									)}
-									<div className="absolute inset-0 bg-black/30 flex flex-col items-center justify-center px-2">
-										{renaming?.type === "collection" &&
-										renaming.id === col.id ? (
-											<input
-												aria-label="Rename collection"
-												ref={renameInputRef}
-												value={renameValue}
-												onChange={(e) =>
-													dispatch({
-														type: "setRenameValue",
-														value: e.target.value,
-													})
-												}
-												onKeyDown={(e) => {
-													if (e.key === "Enter") commitRename();
-													if (e.key === "Escape")
-														dispatch({ type: "cancelRename" });
-												}}
-												onBlur={commitRename}
-												onClick={(e) => e.stopPropagation()}
-												className="bg-transparent text-white font-semibold text-sm text-center outline-none border-b border-white/60 w-full"
-											/>
-										) : (
-											<span className="text-white font-semibold text-sm text-center drop-shadow">
-												{col.name}
-											</span>
-										)}
-										<span className="text-white/70 text-xs mt-1">
-											{ids.size} {ids.size === 1 ? "image" : "images"}
+										<span className="absolute top-3 left-3 text-sm font-semibold z-10 line-clamp-1 max-w-[70%] leading-tight">
+											{col.name}
 										</span>
-									</div>
+									)}
+									{/* count */}
+									<span className="absolute bottom-3 right-3 text-sm font-medium text-muted-foreground z-10">
+										{ids.size}
+									</span>
 								</ContextMenu.Trigger>
 								<ContextMenu.Portal>
 									<ContextMenu.Positioner>
