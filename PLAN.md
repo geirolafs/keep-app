@@ -123,11 +123,14 @@ Add support for additional file formats beyond the current `png | jpg | jpeg | g
 - [x] **Refresh Thumbnails**: `refresh_thumbnails(items)` Rust command; JS loops per-image calling with single-item slice for `x of y` progress; skips SVG/GIF/video (thumb = file). Button in Settings → Developer section.
 
 #### Grid
-- [x] **Masonry alignment fix**: replaced CSS `columns` (which has browser balancing alignment bugs) with explicit flex columns. `ResizeObserver` on container drives `numCols` state (2/3/4/5 at same breakpoints). Items distributed sequentially into column arrays. Each column is `flex flex-col gap-3 items-start`.
+- [x] **Masonry alignment fix**: replaced CSS `columns` (which has browser balancing alignment bugs) with explicit flex columns. `ResizeObserver` on container drives `numCols` state (2/3/4/5 at same breakpoints). Items distributed round-robin across columns (item 0 → col 0, item 1 → col 1, …) so the top row reads left→right newest-first. Each column is `flex flex-col gap-3 items-start`.
 - [x] **Grid polish**: removed `rounded-lg` from cards; removed `outline` focus ring; `display: block` on img/video eliminates inline baseline descender gap.
 - [x] **Column count slider**: 2–12 columns; persisted to `settings` table (`col_count`). Range input in Grid toolbar; `ResizeObserver` auto-breakpoints still fire when no manual preference is set (`manualColsRef` guard).
 - [x] **Hover scale**: replaced gradient overlay + opacity fade with `scale(1.02)` inline style transform (`transition: transform 150ms ease`). Overlay div removed.
 - [x] **Video slow-mo in grid**: `onLoadedData` → `playbackRate = 0.25` (always slow); `onMouseEnter` → `1`; `onMouseLeave` → `0.25`. Hover plays at normal speed, idle plays in slow-mo.
+- [x] **Ghost cards for in-progress saves**: `PendingItem` type + `pendingItems` state in `ImagesContext`; `addPending(label)` called before each `invoke`, `removePending(id)` in `finally`; pending items prepended to masonry column distribution so ghost card appears inline at position 0 (same layout as real cards); shimmer + spinner + truncated URL label. Covers saveBlob, savePath, saveUrl, saveLink.
+- [x] **Cursor fix**: removed `cursor-pointer` from masonry cards, collection squares, BinView cards, context menu items — default arrow cursor matches native macOS app behavior. `<a>` tags retain browser-default pointer.
+- [x] **Sort by name**: `Sort` type extended to `"newest" | "oldest" | "name-az" | "name-za"`; toggle cycles through all 4 states; button shows icon + "Date"/"Name" label; Grid sorts by `title ?? file_path` via `localeCompare`.
 
 #### Help & Shortcuts
 - [x] **`?` help modal**: `?` keypress (App.tsx, guards inputs/textareas) + `?` button in TopNav opens AlertDialog with keyboard shortcuts table + tips. `openHelp()` on `TopNavHandle`.
@@ -156,6 +159,10 @@ Add support for additional file formats beyond the current `png | jpg | jpeg | g
 #### Dev Tools
 - [x] **Settings modal consolidation**: Save E1, Load E1, Reset (2-step inline confirm), Randomize Order button, Refresh Thumbs button all moved to Settings → Developer section (DEV-only). Toolbar now only has Analyze All + Add.
 - [x] **Randomize Order**: button increments `shuffleSeed`; Grid assigns random weights per-image on seed change, sorts by weight. Counter shows `(×N)`.
+
+#### Notifications & Toasts
+- [x] **macOS OS notifications**: `tauri-plugin-notification` added (Cargo.toml, lib.rs, capabilities); `@tauri-apps/plugin-notification` JS package; `sendNotification` (fire-and-forget, silent on permission denial) fires after: Analyze All complete, Vision scan done, Refresh Thumbnails done — operations where user may have walked away.
+- [x] **Toast cleanup**: removed success/info toasts for all CRUD ops (save, delete, restore, bin empty, tag rename/delete, collection create/rename/delete) — UI change is the confirmation. Kept: all `type:"error"` toasts + brief copy confirmations ("Copied to clipboard", "Copied hex", "Prompt copied").
 
 #### AI Analysis
 - [x] **SVG analysis**: rasterize via `qlmanage` (reuses video frame extractor, no new dep) → PNG → `image/png` to vision API

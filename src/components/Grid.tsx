@@ -745,11 +745,9 @@ export default function Grid({
 			...visibleImages,
 		];
 
-		// Distribute items into columns sequentially (same order as CSS columns)
-		const perCol = Math.ceil(allDisplayItems.length / numCols);
-		const cols = Array.from({ length: numCols }, (_, i) =>
-			allDisplayItems.slice(i * perCol, (i + 1) * perCol),
-		);
+		// Round-robin distribution so reading order (left→right) matches item order
+		const cols = Array.from({ length: numCols }, (): typeof allDisplayItems => []);
+		allDisplayItems.forEach((item, i) => cols[i % numCols].push(item));
 
 		const renderCard = (item: PendingItem | (typeof visibleImages)[0]) => {
 			if (!("file_path" in item)) {
