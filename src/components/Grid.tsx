@@ -482,12 +482,12 @@ export default function Grid({
 	const contextMenuItemDestructiveClass =
 		"flex items-center px-3 py-1.5 rounded-md text-destructive hover:bg-destructive/10 outline-none select-none";
 
-	const FAN_SLOTS: { rotate: number; align: "center" | "start" | "end" }[] = [
-		{ rotate: -30, align: "center" },
-		{ rotate: -15, align: "start" },
-		{ rotate: 15,  align: "start" },
-		{ rotate: 30,  align: "center" },
-	];
+	const FAN_CONFIGS: Record<number, { rotate: number; align: "center" | "start" | "end"; nudge?: string }[]> = {
+		1: [{ rotate: 0,   align: "center" }],
+		2: [{ rotate: -15, align: "center" }, { rotate: 15,  align: "center" }],
+		3: [{ rotate: -15, align: "center", nudge: "10%" }, { rotate: 0, align: "center" }, { rotate: 15, align: "center", nudge: "10%" }],
+		4: [{ rotate: -30, align: "center" }, { rotate: -15, align: "start"  }, { rotate: 15, align: "start"  }, { rotate: 30, align: "center" }],
+	};
 
 	// Collection grid view
 	const renderCollectionGrid = () => (
@@ -513,9 +513,9 @@ export default function Grid({
 				<div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
 					{collections.map((col) => {
 						const ids = getCollectionImageIds(col.id);
-						const thumbs = getCollectionThumbs(col.id, allImages, 4);
 						const slotCount = Math.min(ids.size, 4);
-						const activeSlots = FAN_SLOTS.slice(FAN_SLOTS.length - slotCount);
+						const activeSlots = FAN_CONFIGS[slotCount] ?? [];
+						const thumbs = getCollectionThumbs(col.id, allImages, slotCount);
 						return (
 							<ContextMenu.Root key={col.id}>
 								<ContextMenu.Trigger
@@ -530,7 +530,8 @@ export default function Grid({
 											{activeSlots.map((slot, i) => (
 												<div
 													key={i}
-													className={`shrink-0 w-[40%] mr-[-26%] last:mr-0 flex flex-col drop-shadow-[0_6px_12px_rgba(0,0,0,0.3)] ${slot.align === "end" ? "justify-end" : slot.align === "center" ? "justify-center" : "justify-start"}`}
+													style={slot.nudge ? { paddingTop: slot.nudge } : undefined}
+												className={`shrink-0 w-[40%] mr-[-26%] last:mr-0 flex flex-col drop-shadow-[0_6px_12px_rgba(0,0,0,0.3)] ${slot.align === "end" ? "justify-end" : slot.align === "center" ? "justify-center" : "justify-start"}`}
 												>
 													{thumbs[i] && (
 														<div
