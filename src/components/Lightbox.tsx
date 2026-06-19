@@ -19,10 +19,12 @@ import {
   RiVolumeUpLine,
 } from "@remixicon/react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
+
 import { useTags } from "@/hooks/use-tags";
 import { useCollections } from "@/hooks/useCollections";
 import { useSettings } from "@/hooks/use-settings";
-import { toastManager } from "@/lib/toast";
+import { toast } from "@/lib/toast";
 import { PostCard } from "@/components/PostCard";
 import type { Image } from "@/hooks/use-images";
 
@@ -156,8 +158,8 @@ export function Lightbox({
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
-  const [colMenuOpen, setColMenuOpen] = useState(false);
-  const colMenuRef = useRef<HTMLDivElement>(null);
+  const [colPickerOpen, setColPickerOpen] = useState(false);
+  const colPickerRef = useRef<HTMLDivElement>(null);
   const [notesFocused, setNotesFocused] = useState(false);
   const [tagInputFocused, setTagInputFocused] = useState(false);
   const [descFocused, setDescFocused] = useState(false);
@@ -173,6 +175,17 @@ export function Lightbox({
   const displayImageRef = useRef<Image | null>(null);
   const isPanningRef = useRef(false);
   const panStartRef = useRef<{ mx: number; my: number; px: number; py: number } | null>(null);
+
+  useEffect(() => {
+    if (!colPickerOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (colPickerRef.current && !colPickerRef.current.contains(e.target as Node)) {
+        setColPickerOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [colPickerOpen]);
 
   useEffect(() => {
     if (currentIndex === null) return;
@@ -378,15 +391,6 @@ export function Lightbox({
     };
   }, [isOpen]);
 
-  useEffect(() => {
-    if (!colMenuOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (colMenuRef.current && !colMenuRef.current.contains(e.target as Node)) setColMenuOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [colMenuOpen]);
-
   if (!hasOpenedRef.current || !displayImage || displayIndex === null) return null;
 
   const isSvg = displayImage.file_path.toLowerCase().endsWith(".svg");
@@ -427,8 +431,12 @@ export function Lightbox({
       onOpenSettings?.();
       return;
     }
-    const apiKey = (await getSetting("api_key")) ?? "";
-    const model = (await getSetting("model")) ?? "anthropic/claude-sonnet-4-6";
+    const [storedKey, model, aiSource] = await Promise.all([
+      getSetting("api_key"),
+      getSetting("model"),
+      getSetting("ai_source"),
+    ]);
+    const apiKey = aiSource === "cloud" ? (storedKey ?? "") : "";
     dispatch({ type: "setAnalyzing", value: true });
     try {
       const result = await invoke<{ title: string; tags: string[]; description: string } | null>(
@@ -444,7 +452,7 @@ export function Lightbox({
     } catch (err) {
       console.error("[keep] analyze failed:", err);
       const msg = typeof err === "string" ? err : "Analysis failed";
-      toastManager.add({ title: msg, type: "error" });
+      toast.error(msg);
     } finally {
       dispatch({ type: "setAnalyzing", value: false });
     }
@@ -452,9 +460,10 @@ export function Lightbox({
 
   const handleGeneratePrompt = async () => {
     if (!image || generatingPrompt) return;
-    const apiKey = await getSetting("api_key");
-    if (!apiKey) {
-      toastManager.add({ title: "Add your OpenRouter API key in Settings", type: "error" });
+    const [storedKey, aiSource] = await Promise.all([getSetting("api_key"), getSetting("ai_source")]);
+    const apiKey = aiSource === "cloud" ? (storedKey ?? "") : "";
+    if (aiSource === "cloud" && !apiKey) {
+      toast.error("Add your OpenRouter API key in Settings");
       return;
     }
     dispatch({ type: "setGeneratingPrompt", value: true });
@@ -468,7 +477,7 @@ export function Lightbox({
     } catch (err) {
       const msg = typeof err === "string" ? err : String(err);
       console.error("[keep] generate prompt failed:", msg);
-      toastManager.add({ title: `Prompt failed: ${msg}`, type: "error" });
+      toast.error(`Prompt failed: ${msg}`);
       dispatch({ type: "setGeneratingPrompt", value: false });
     }
   };
@@ -481,7 +490,7 @@ export function Lightbox({
     try {
       await invoke("export_original", { filePath: image.file_path, destPath });
     } catch {
-      toastManager.add({ title: "Export failed", type: "error" });
+      toast.error("Export failed");
     }
   };
 
@@ -489,9 +498,9 @@ export function Lightbox({
     if (!image) return;
     try {
       await invoke("copy_image_to_clipboard", { filePath: image.file_path });
-      toastManager.add({ title: "Copied to clipboard", type: "success", timeout: 1500 });
+      toast.success("Copied to clipboard", { duration: 1500 });
     } catch {
-      toastManager.add({ title: "Copy failed", type: "error" });
+      toast.error("Copy failed");
     }
   };
 
@@ -507,9 +516,9 @@ export function Lightbox({
       ctx.drawImage(video, 0, 0);
       const pngBase64 = canvas.toDataURL("image/png").split(",")[1];
       await invoke("copy_image_bytes_to_clipboard", { pngBase64 });
-      toastManager.add({ title: "Frame copied", type: "success", timeout: 1500 });
+      toast.success("Frame copied", { duration: 1500 });
     } catch (err) {
-      toastManager.add({ title: `Copy failed: ${err instanceof Error ? err.message : String(err)}`, type: "error" });
+      toast.error(`Copy failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
@@ -810,8 +819,7 @@ export function Lightbox({
               onFocus={() => setDescFocused(true)}
               onBlur={() => { if (image) onUpdateDescription(image.id, descriptionValue); if (!descriptionValue) setDescFocused(false); }}
               placeholder="Write a description…"
-              rows={3}
-              className="w-full resize-none overflow-y-auto bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground/40"
+              className="h-[70px] w-full resize-none overflow-y-auto bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground/40"
             />
           ) : (
             <button
@@ -849,13 +857,13 @@ export function Lightbox({
                     <Skeleton className="h-3.5 w-4/6" />
                   </div>
                 ) : (
-                  <div className="group relative">
+                  <div className="group relative max-h-48 overflow-y-auto">
                     <p className="pr-5 text-sm leading-relaxed text-foreground">{promptValue}</p>
                     <button
                       type="button"
                       onClick={() => {
                         navigator.clipboard.writeText(promptValue);
-                        toastManager.add({ title: "Prompt copied", type: "success", timeout: 1500 });
+                        toast.success("Prompt copied", { duration: 1500 });
                       }}
                       className="absolute right-0 top-0 opacity-0 transition-opacity group-hover:opacity-100"
                       aria-label="Copy prompt"
@@ -880,7 +888,7 @@ export function Lightbox({
                   key={color}
                   onClick={() => {
                     navigator.clipboard.writeText(color);
-                    toastManager.add({ title: `Copied ${color}`, type: "success", timeout: 1500 });
+                    toast.success(`Copied ${color}`, { duration: 1500 });
                   }}
                   className="size-7 rounded-md ring-1 ring-black/20 transition-transform hover:scale-[1.06] active:scale-95"
                   style={{ backgroundColor: color }}
@@ -898,9 +906,17 @@ export function Lightbox({
         {/* Tags */}
         <div className="px-5 pb-3 pt-3">
           <span className="mb-2 block text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Tags</span>
+          {analyzing ? (
+            <div className="flex flex-wrap gap-1.5">
+              <Skeleton className="h-6 w-20 rounded-full" />
+              <Skeleton className="h-6 w-16 rounded-full" />
+              <Skeleton className="h-6 w-24 rounded-full" />
+              <Skeleton className="h-6 w-14 rounded-full" />
+            </div>
+          ) : (
           <div className="flex flex-wrap gap-1.5">
             {imageTags.map((tag) => (
-              <span key={tag.id} className="inline-flex select-none items-center gap-1 rounded-full bg-accent px-2.5 py-0.5 text-xs">
+              <Badge key={tag.id} variant="pill">
                 {tag.name}
                 <button
                   type="button"
@@ -910,7 +926,7 @@ export function Lightbox({
                 >
                   <RiCloseLine className="size-3" />
                 </button>
-              </span>
+              </Badge>
             ))}
             {tagInput || tagInputFocused ? (
               <input
@@ -942,6 +958,7 @@ export function Lightbox({
               ))}
             </datalist>
           </div>
+          )}
         </div>
 
         {/* Collections */}
@@ -949,7 +966,7 @@ export function Lightbox({
           <span className="mb-2 block text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Collections</span>
           <div className="flex flex-wrap gap-1.5">
             {imageCollections.map((col) => (
-              <span key={col.id} className="inline-flex select-none items-center gap-1 rounded-full bg-accent px-2.5 py-0.5 text-xs">
+              <Badge key={col.id} variant="pill">
                 {col.name}
                 <button
                   type="button"
@@ -959,7 +976,7 @@ export function Lightbox({
                 >
                   <RiCloseLine className="size-3" />
                 </button>
-              </span>
+              </Badge>
             ))}
             {/* Add to existing or create new — single dropdown, "New collection…" always first */}
             {creatingCol ? (
@@ -982,35 +999,40 @@ export function Lightbox({
                 className="w-32 bg-transparent py-0.5 text-xs outline-none placeholder:text-muted-foreground/40"
               />
             ) : (
-              <div className="relative" ref={colMenuRef}>
+              <div className="relative" ref={colPickerRef}>
                 <button
                   type="button"
-                  onClick={() => setColMenuOpen((v) => !v)}
+                  onClick={() => setColPickerOpen(v => !v)}
                   className="flex items-center py-0.5 text-muted-foreground/40 transition-colors hover:text-muted-foreground/70"
                   aria-label="Add to collection"
                 >
                   <RiAddLine className="size-3.5" />
                 </button>
-                {colMenuOpen && (
-                  <div className="absolute left-0 top-full z-50 mt-1 min-w-[160px] rounded-lg bg-popover py-1 shadow-lg ring-1 ring-white/10">
-                    <button
-                      type="button"
-                      className="w-full px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-                      onClick={() => { setColMenuOpen(false); dispatch({ type: "setCreatingCol", value: true }); }}
-                    >
-                      New collection…
-                    </button>
-                    {unassignedCollections.length > 0 && <div className="my-1 border-t border-white/10" />}
-                    {unassignedCollections.map((c) => (
+                {colPickerOpen && (
+                  <div className="absolute left-0 top-full mt-1 z-10 min-w-[160px] rounded-lg border border-border bg-popover shadow-lg text-xs text-popover-foreground flex flex-col">
+                    <div className="p-1 border-b border-border/50">
                       <button
-                        key={c.id}
                         type="button"
-                        className="w-full px-3 py-1.5 text-left text-xs hover:bg-accent transition-colors"
-                        onClick={() => { addToCollection(c.id, displayImage.id); setColMenuOpen(false); }}
+                        className="w-full rounded-md px-2 py-1.5 text-left text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                        onMouseDown={(e) => { e.preventDefault(); setColPickerOpen(false); dispatch({ type: "setCreatingCol", value: true }); }}
                       >
-                        {c.name}
+                        New collection…
                       </button>
-                    ))}
+                    </div>
+                    {unassignedCollections.length > 0 && (
+                      <div className="overflow-y-auto max-h-[200px] p-1">
+                        {unassignedCollections.map((c) => (
+                          <button
+                            key={c.id}
+                            type="button"
+                            className="w-full rounded-md px-2 py-1.5 text-left hover:bg-accent hover:text-foreground transition-colors"
+                            onMouseDown={(e) => { e.preventDefault(); setColPickerOpen(false); addToCollection(c.id, displayImage.id); }}
+                          >
+                            {c.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

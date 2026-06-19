@@ -555,6 +555,18 @@ async fn get_local_model_status(app: tauri::AppHandle) -> Result<LocalModelStatu
 }
 
 #[tauri::command]
+async fn delete_local_model(app: tauri::AppHandle) -> Result<(), String> {
+    let models_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("models");
+    for name in &["Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf", "mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf"] {
+        let path = models_dir.join(name);
+        if path.exists() {
+            trash::delete(&path).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn download_model_file(
     url: String,
     filename: String,
@@ -589,12 +601,25 @@ async fn download_model_file(
     Ok(())
 }
 
+fn sentence_case_result(mut r: AnalysisResult) -> AnalysisResult {
+    let mut chars = r.title.chars();
+    r.title = match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+    };
+    r
+}
+
 async fn analyze_local(thumb_path: &str, app: &tauri::AppHandle) -> Result<AnalysisResult, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = exe.parent().ok_or("no exe parent")?;
     let arch = std::env::consts::ARCH;
     let binary_name = format!("llama-mtmd-cli-{}-apple-darwin", arch);
     let binary = dir.join(&binary_name);
+    // In dev mode Tauri copies the sidecar without the arch suffix but without dylibs;
+    // skip it and fall back to the homebrew binary which is self-contained.
+    let binary = if binary.exists() { binary }
+        else { std::path::PathBuf::from("/opt/homebrew/bin/llama-mtmd-cli") };
 
     let models_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("models");
     let text_model = models_dir.join("Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf");
@@ -607,10 +632,9 @@ async fn analyze_local(thumb_path: &str, app: &tauri::AppHandle) -> Result<Analy
             "-m", text_model.to_str().unwrap_or(""),
             "--mmproj", mmproj.to_str().unwrap_or(""),
             "--image", thumb_path,
-            "-p", "Analyze this image. Provide: a short descriptive title (max 8 words), 3-5 single-word or short-phrase tags, and a 1-2 sentence description.",
+            "-p", "Analyze this image carefully. Return JSON with: title (max 8 words, include key visual qualities like condition/mood/style), tags (4-6 lowercase words covering subject, mood, visual style, and physical condition — do NOT just copy text visible in the image), description (1-2 sentences noting what you see including any notable visual details like wear, lighting, or composition).",
             "--json-schema", schema,
             "-n", "512",
-            "--no-display-prompt",
             "-ngl", "99",
         ])
         .output()
@@ -620,6 +644,7 @@ async fn analyze_local(thumb_path: &str, app: &tauri::AppHandle) -> Result<Analy
     let json_str = stdout.rfind('{').map(|i| &stdout[i..]).unwrap_or(stdout.trim());
 
     serde_json::from_str::<AnalysisResult>(json_str)
+        .map(sentence_case_result)
         .map_err(|e| format!("Failed to parse local AI response: {} — raw: {}", e, json_str))
 }
 
@@ -673,7 +698,7 @@ async fn analyze_image(thumb_path: String, api_key: String, model: String, app: 
                 },
                 {
                     "type": "text",
-                    "text": "Analyze this image. Reply ONLY with valid JSON, no markdown fences: {\"title\": \"Short descriptive title\", \"tags\": [\"tag1\", \"tag2\", \"tag3\"], \"description\": \"One sentence description.\"}. For tags: 3 to 5 broad, distinct, lowercase tags — no duplicates or near-duplicates (e.g. pick 'apple' not both 'apple' and 'apple inc'). Prefer category-level tags over specific details."
+                    "text": "Analyze this image. Reply ONLY with valid JSON, no markdown fences: {\"title\": \"Short descriptive title\", \"tags\": [\"tag1\", \"tag2\", \"tag3\"], \"description\": \"One sentence description.\"}. Title: max 8 words, include notable visual qualities (condition, mood, lighting). Tags: 4-6 lowercase words covering subject, visual style, mood, and physical condition — broad and distinct, no near-duplicates. Description: 1-2 sentences, mention any notable visual details like wear, texture, lighting, or composition."
                 }
             ]
         }]
@@ -705,11 +730,52 @@ async fn analyze_image(thumb_path: String, api_key: String, model: String, app: 
     let cleaned = cleaned.trim();
 
     serde_json::from_str::<AnalysisResult>(cleaned)
+        .map(sentence_case_result)
         .map_err(|e| format!("Failed to parse AI response: {} — raw: {}", e, cleaned))
 }
 
+async fn generate_prompt_local(thumb_path: &str, app: &tauri::AppHandle) -> Result<String, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let dir = exe.parent().ok_or("no exe parent")?;
+    let arch = std::env::consts::ARCH;
+    let binary_name = format!("llama-mtmd-cli-{}-apple-darwin", arch);
+    let binary = dir.join(&binary_name);
+    let binary = if binary.exists() { binary }
+        else { std::path::PathBuf::from("/opt/homebrew/bin/llama-mtmd-cli") };
+
+    let models_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("models");
+    let text_model = models_dir.join("Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf");
+    let mmproj = models_dir.join("mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf");
+
+    let output = std::process::Command::new(&binary)
+        .args([
+            "-m", text_model.to_str().unwrap_or(""),
+            "--mmproj", mmproj.to_str().unwrap_or(""),
+            "--image", thumb_path,
+            "-p", "Write a detailed image generation prompt for this image, suitable for Midjourney, DALL-E, or Flux. Describe the subject, composition, style, lighting, color palette, mood, and any relevant technical or artistic details. Return ONLY the prompt text — no preamble, labels, or explanation.",
+            "-n", "512",
+            "-ngl", "99",
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    let stdout = std::str::from_utf8(&output.stdout).map_err(|e| e.to_string())?;
+    let result = stdout.trim().to_string();
+    if result.is_empty() {
+        return Err("Local model returned empty prompt".to_string());
+    }
+    Ok(result)
+}
+
 #[tauri::command]
-async fn generate_prompt(thumb_path: String, api_key: String, model: String) -> Result<String, String> {
+async fn generate_prompt(thumb_path: String, api_key: String, model: String, app: tauri::AppHandle) -> Result<String, String> {
+    if api_key.is_empty() {
+        let local_status = get_local_model_status(app.clone()).await?;
+        if local_status.present {
+            return generate_prompt_local(&thumb_path, &app).await;
+        }
+        return Err("No AI configured. Add an API key or download KEEP AI in Settings.".to_string());
+    }
     let ext = std::path::Path::new(&thumb_path)
         .extension()
         .and_then(|s| s.to_str())
@@ -1319,6 +1385,7 @@ pub fn run() {
             save_example_snapshot,
             load_example_snapshot,
             get_local_model_status,
+            delete_local_model,
             download_model_file,
             analyze_image,
             analyze_vision_item,

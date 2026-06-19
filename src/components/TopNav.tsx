@@ -1,7 +1,8 @@
-import { AlertDialog } from "@base-ui/react/alert-dialog";
+import { AlertDialog, AlertDialogContent, AlertDialogTitle, AlertDialogClose } from "@/components/ui/alert-dialog";
 import {
 	RiAddLine,
 	RiCheckLine,
+	RiDeleteBinLine,
 	RiEyeLine,
 	RiEyeOffLine,
 	RiLoader4Line,
@@ -40,7 +41,7 @@ import {
 } from "@/hooks/use-images";
 import { type AnalyzeMode, useSettings } from "@/hooks/use-settings";
 import { useTags } from "@/hooks/use-tags";
-import { toastManager } from "@/lib/toast";
+import { toast } from "@/lib/toast";
 
 export type Tab = "all" | "collections" | "tags" | "bin";
 export type Sort = "newest" | "oldest" | "name-az" | "name-za";
@@ -76,6 +77,7 @@ type SettingsState = {
 	showApiKey: boolean;
 	analyzeMode: AnalyzeMode;
 	model: string;
+	aiSource: "local" | "cloud";
 	refreshProgress: { done: number; total: number } | null;
 	analyzeProgress: { done: number; total: number } | null;
 	visionProgress: { done: number; total: number } | null;
@@ -83,10 +85,11 @@ type SettingsState = {
 };
 
 type SettingsAction =
-	| { type: "open"; apiKey: string; analyzeMode: AnalyzeMode; model: string }
+	| { type: "open"; apiKey: string; analyzeMode: AnalyzeMode; model: string; aiSource: "local" | "cloud" }
 	| { type: "close" }
 	| { type: "setApiKey"; value: string }
 	| { type: "toggleShowApiKey" }
+	| { type: "setAiSource"; value: "local" | "cloud" }
 	| { type: "setAnalyzeMode"; mode: AnalyzeMode }
 	| { type: "setModel"; value: string }
 	| {
@@ -116,6 +119,7 @@ function settingsReducer(
 				apiKey: action.apiKey,
 				analyzeMode: action.analyzeMode,
 				model: action.model,
+				aiSource: action.aiSource,
 				showApiKey: false,
 				resetConfirm: false,
 			};
@@ -125,6 +129,8 @@ function settingsReducer(
 			return { ...state, apiKey: action.value };
 		case "toggleShowApiKey":
 			return { ...state, showApiKey: !state.showApiKey };
+		case "setAiSource":
+			return { ...state, aiSource: action.value };
 		case "setAnalyzeMode":
 			return { ...state, analyzeMode: action.mode };
 		case "setModel":
@@ -213,6 +219,7 @@ function TopNav({
 		showApiKey: false,
 		analyzeMode: "manual",
 		model: "anthropic/claude-sonnet-4-6",
+		aiSource: "local",
 		refreshProgress: null,
 		analyzeProgress: null,
 		visionProgress: null,
@@ -276,16 +283,19 @@ function TopNav({
 	};
 
 	const openSettings = async () => {
-		const [key, mode, model] = await Promise.all([
+		const [key, mode, model, aiSource] = await Promise.all([
 			getSetting("api_key"),
 			getSetting("analyze_mode"),
 			getSetting("model"),
+			getSetting("ai_source"),
 		]);
+		const defaultSource = localModelPresent ? "local" : "cloud";
 		settingsDispatch({
 			type: "open",
 			apiKey: key ?? "",
 			analyzeMode: (mode as AnalyzeMode | null) ?? "manual",
 			model: model ?? "anthropic/claude-sonnet-4-6",
+			aiSource: (aiSource as "local" | "cloud" | null) ?? defaultSource,
 		});
 	};
 
@@ -339,15 +349,17 @@ function TopNav({
 			analyzeCancelRef.current = true;
 			return;
 		}
-		const apiKey = await getSetting("api_key");
-		if (!apiKey) {
-			toastManager.add({
-				title: "Add your OpenRouter API key in Settings",
-				type: "error",
-			});
+		const [aiSource, storedKey, model] = await Promise.all([
+			getSetting("ai_source"),
+			getSetting("api_key"),
+			getSetting("model"),
+		]);
+		const usingCloud = aiSource === "cloud" || (!localModelPresent && aiSource !== "local");
+		const apiKey = usingCloud ? (storedKey ?? "") : "";
+		if (usingCloud && !apiKey) {
+			toast.error("Add your OpenRouter API key in Settings");
 			return;
 		}
-		const model = (await getSetting("model")) ?? "anthropic/claude-sonnet-4-6";
 		analyzeCancelRef.current = false;
 		settingsDispatch({
 			type: "setAnalyzeProgress",
@@ -373,7 +385,7 @@ function TopNav({
 				} | null>("analyze_image", {
 					thumbPath: img.thumb_path,
 					apiKey,
-					model,
+					model: model ?? "anthropic/claude-sonnet-4-6",
 				});
 				if (result && !analyzeCancelRef.current) {
 					analyzedCount++;
@@ -440,6 +452,7 @@ function TopNav({
 			setSetting("api_key", settings.apiKey),
 			setSetting("analyze_mode", settings.analyzeMode),
 			setSetting("model", settings.model),
+			setSetting("ai_source", settings.aiSource),
 		]);
 		settingsDispatch({ type: "close" });
 	};
@@ -661,22 +674,19 @@ function TopNav({
 			</div>
 
 			{/* Settings Modal */}
-			<AlertDialog.Root
+			<AlertDialog
 				open={settings.open}
-				onOpenChange={(open) => {
+				onOpenChange={(open: boolean) => {
 					if (!open) settingsDispatch({ type: "close" });
 				}}
 			>
-				<AlertDialog.Portal>
-					<AlertDialog.Backdrop className="fixed inset-0 z-40 bg-black/50 transition-opacity duration-[200ms] ease-out data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
-					<AlertDialog.Viewport className="fixed inset-0 z-50 flex items-center justify-center p-4">
-						<AlertDialog.Popup
-							className="w-full max-w-sm rounded-xl border border-border bg-background p-5 shadow-xl transition-[opacity,transform] duration-[200ms] ease-[cubic-bezier(0.23,1,0.32,1)] data-[starting-style]:opacity-0 data-[starting-style]:scale-95 data-[ending-style]:opacity-0 data-[ending-style]:scale-95"
-							onKeyDown={(e) => { if (e.key === "Escape") saveSettings(); }}
-						>
-							<AlertDialog.Title className="text-base font-semibold">
-								Settings
-							</AlertDialog.Title>
+				<AlertDialogContent
+					className="max-w-sm p-5"
+					onKeyDown={(e: React.KeyboardEvent) => { if (e.key === "Escape") saveSettings(); }}
+				>
+					<AlertDialogTitle>
+						Settings
+					</AlertDialogTitle>
 
 							<div className="mt-4 space-y-4">
 								{/* ── AI Model ── */}
@@ -685,134 +695,154 @@ function TopNav({
 
 									{/* Local */}
 									<div>
-										<p className="mb-1.5 text-sm font-medium">Local</p>
-										{localModelPresent ? (
-											<div className="flex items-center gap-2">
-												<RiCheckLine className="size-4 text-green-500 shrink-0" />
-												<div>
-													<span className="text-sm font-medium text-green-600">
-														KEEP AI Ready
-													</span>
-													<p className="text-xs text-muted-foreground">
-														Qwen2.5-VL-3B · ~3.3 GB
-													</p>
-												</div>
-											</div>
-										) : isDownloading ? (
-											<div className="space-y-2">
-												{downloadProgress && (
-													<div>
-														<div className="mb-1 flex items-center justify-between">
-															<span className="max-w-[200px] truncate text-xs text-muted-foreground">
-																{downloadProgress.filename}
-															</span>
-															<span className="ml-2 shrink-0 text-xs text-muted-foreground">
-																{Math.round(downloadProgress.pct)}%
-															</span>
-														</div>
-														<div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-															<div
-																className="h-full rounded-full bg-foreground transition-all duration-300"
-																style={{ width: `${downloadProgress.pct}%` }}
-															/>
-														</div>
+										<button
+											type="button"
+											onClick={() => settingsDispatch({ type: "setAiSource", value: "local" })}
+											className="mb-1.5 flex w-full items-center gap-2 text-sm font-medium"
+										>
+											<span className={[
+												"flex size-3.5 shrink-0 items-center justify-center rounded-full border",
+												settings.aiSource === "local" ? "border-foreground bg-foreground" : "border-muted-foreground/40",
+											].join(" ")}>
+												{settings.aiSource === "local" && <span className="size-1.5 rounded-full bg-background" />}
+											</span>
+											<span>Local</span>
+											{settings.aiSource !== "local" && (
+												<span className="font-normal text-muted-foreground">· on-device, no API key</span>
+											)}
+										</button>
+										{settings.aiSource === "local" && (
+											localModelPresent ? (
+												<div className="group ml-5 flex items-center gap-2">
+													<RiCheckLine className="size-4 text-green-500 shrink-0" />
+													<div className="flex-1">
+														<span className="text-sm font-medium text-green-600">KEEP AI Ready</span>
+														<p className="text-xs text-muted-foreground">Qwen2.5-VL-3B · ~3.3 GB</p>
 													</div>
-												)}
-												<Button
-													variant="outline"
-													size="sm"
-													className="w-full"
-													onClick={() => {
-														downloadCancelRef.current = true;
-														setIsDownloading(false);
-														setDownloadProgress(null);
-													}}
-												>
-													Cancel
-												</Button>
-											</div>
-										) : (
-											<Button
-												variant="outline"
-												size="sm"
-												className="w-full"
-												onClick={handleDownloadModel}
-											>
-												<RiSparkling2Line className="mr-1.5 size-3.5" />
-												Download KEEP AI (~3.3 GB)
-											</Button>
+													<button
+														type="button"
+														onClick={async () => {
+															try {
+																await invoke("delete_local_model");
+																setLocalModelPresent(false);
+																settingsDispatch({ type: "setAiSource", value: "cloud" });
+																toast.success("Local model deleted");
+															} catch {
+																toast.error("Failed to delete model");
+															}
+														}}
+														className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-muted-foreground hover:text-destructive"
+														title="Delete local model"
+													>
+														<RiDeleteBinLine className="size-3.5" />
+													</button>
+												</div>
+											) : isDownloading ? (
+												<div className="ml-5 space-y-2">
+													{downloadProgress && (
+														<div>
+															<div className="mb-1 flex items-center justify-between">
+																<span className="max-w-[200px] truncate text-xs text-muted-foreground">
+																	{downloadProgress.filename}
+																</span>
+																<span className="ml-2 shrink-0 text-xs text-muted-foreground">
+																	{Math.round(downloadProgress.pct)}%
+																</span>
+															</div>
+															<div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+																<div
+																	className="h-full rounded-full bg-foreground transition-all duration-300"
+																	style={{ width: `${downloadProgress.pct}%` }}
+																/>
+															</div>
+														</div>
+													)}
+													<Button
+														variant="outline"
+														size="sm"
+														className="w-full"
+														onClick={() => {
+															downloadCancelRef.current = true;
+															setIsDownloading(false);
+															setDownloadProgress(null);
+														}}
+													>
+														Cancel
+													</Button>
+												</div>
+											) : (
+												<div className="ml-5">
+													<Button
+														variant="outline"
+														size="sm"
+														className="w-full"
+														onClick={handleDownloadModel}
+													>
+														<RiSparkling2Line className="mr-1.5 size-3.5" />
+														Download KEEP AI (~3.3 GB)
+													</Button>
+												</div>
+											)
 										)}
 									</div>
 
 									{/* Cloud */}
-									<div className={localModelPresent ? "opacity-40 pointer-events-none select-none" : ""}>
-										<p className="mb-1.5 text-sm font-medium">
-											Cloud
-											{localModelPresent && (
-												<span className="ml-1.5 font-normal text-muted-foreground">
-													(inactive)
-												</span>
+									<div>
+										<button
+											type="button"
+											onClick={() => settingsDispatch({ type: "setAiSource", value: "cloud" })}
+											className="mb-1.5 flex w-full items-center gap-2 text-sm font-medium"
+										>
+											<span className={[
+												"flex size-3.5 shrink-0 items-center justify-center rounded-full border",
+												settings.aiSource === "cloud" ? "border-foreground bg-foreground" : "border-muted-foreground/40",
+											].join(" ")}>
+												{settings.aiSource === "cloud" && <span className="size-1.5 rounded-full bg-background" />}
+											</span>
+											<span>Cloud</span>
+											{settings.aiSource !== "cloud" && (
+												<span className="font-normal text-muted-foreground">· richer results, API key required</span>
 											)}
-										</p>
-										<div className="space-y-2">
-											<div>
-												<label
-													htmlFor="setting-api-key"
-													className="mb-1.5 block text-xs text-muted-foreground"
-												>
-													OpenRouter API Key
-												</label>
-												<div className="relative">
+										</button>
+										{settings.aiSource === "cloud" && (
+											<div className="ml-5 space-y-2">
+												<div>
+													<label htmlFor="setting-api-key" className="mb-1.5 block text-xs text-muted-foreground">
+														OpenRouter API Key
+													</label>
+													<div className="relative">
+														<input
+															id="setting-api-key"
+															type={settings.showApiKey ? "text" : "password"}
+															value={settings.apiKey}
+															onChange={(e) => settingsDispatch({ type: "setApiKey", value: e.target.value })}
+															placeholder="sk-or-..."
+															className="h-9 w-full rounded-md border border-input bg-background px-3 pr-9 text-sm outline-none focus:ring-1 focus:ring-ring"
+														/>
+														<button
+															type="button"
+															onClick={() => settingsDispatch({ type: "toggleShowApiKey" })}
+															className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+														>
+															{settings.showApiKey ? <RiEyeOffLine className="size-4" /> : <RiEyeLine className="size-4" />}
+														</button>
+													</div>
+												</div>
+												<div>
+													<label htmlFor="setting-model" className="mb-1.5 block text-xs text-muted-foreground">
+														Model
+													</label>
 													<input
-														id="setting-api-key"
-														type={settings.showApiKey ? "text" : "password"}
-														value={settings.apiKey}
-														onChange={(e) =>
-															settingsDispatch({
-																type: "setApiKey",
-																value: e.target.value,
-															})
-														}
-														placeholder="sk-or-..."
-														className="h-9 w-full rounded-md border border-input bg-background px-3 pr-9 text-sm outline-none focus:ring-1 focus:ring-ring"
+														id="setting-model"
+														type="text"
+														value={settings.model}
+														onChange={(e) => settingsDispatch({ type: "setModel", value: e.target.value })}
+														placeholder="anthropic/claude-sonnet-4-6"
+														className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-1 focus:ring-ring"
 													/>
-													<button
-														type="button"
-														onClick={() =>
-															settingsDispatch({ type: "toggleShowApiKey" })
-														}
-														className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
-													>
-														{settings.showApiKey ? (
-															<RiEyeOffLine className="size-4" />
-														) : (
-															<RiEyeLine className="size-4" />
-														)}
-													</button>
 												</div>
 											</div>
-											<div>
-												<label
-													htmlFor="setting-model"
-													className="mb-1.5 block text-xs text-muted-foreground"
-												>
-													Model
-												</label>
-												<input
-													id="setting-model"
-													type="text"
-													value={settings.model}
-													onChange={(e) =>
-														settingsDispatch({
-															type: "setModel",
-															value: e.target.value,
-														})
-													}
-													placeholder="anthropic/claude-sonnet-4-6"
-													className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-1 focus:ring-ring"
-												/>
-											</div>
-										</div>
+										)}
 									</div>
 								</div>
 
@@ -976,63 +1006,54 @@ function TopNav({
 							)}
 
 							<div className="mt-5 flex justify-end gap-2">
-								<AlertDialog.Close
-									render={<Button variant="outline" size="sm" />}
-								>
+								<AlertDialogClose render={<Button variant="outline" size="sm" />}>
 									Cancel
-								</AlertDialog.Close>
+								</AlertDialogClose>
 								<Button size="sm" onClick={saveSettings}>
 									Save
 								</Button>
 							</div>
-						</AlertDialog.Popup>
-					</AlertDialog.Viewport>
-				</AlertDialog.Portal>
-			</AlertDialog.Root>
+				</AlertDialogContent>
+			</AlertDialog>
 
 			{/* Help Modal */}
-			<AlertDialog.Root open={helpOpen} onOpenChange={setHelpOpen}>
-				<AlertDialog.Portal>
-					<AlertDialog.Backdrop className="fixed inset-0 z-40 bg-black/50 transition-opacity duration-[200ms] ease-out data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
-					<AlertDialog.Viewport className="fixed inset-0 z-50 flex items-center justify-center p-4">
-						<AlertDialog.Popup className="w-full max-w-xs rounded-xl border border-border bg-background p-5 shadow-xl transition-[opacity,transform] duration-[200ms] ease-[cubic-bezier(0.23,1,0.32,1)] data-[starting-style]:opacity-0 data-[starting-style]:scale-95 data-[ending-style]:opacity-0 data-[ending-style]:scale-95">
-							<AlertDialog.Title className="text-base font-semibold">
-								Keyboard Shortcuts
-							</AlertDialog.Title>
-							<div className="mt-3 space-y-2">
-								{SHORTCUTS.map(([key, desc]) => (
-									<div
-										key={key}
-										className="flex items-center justify-between gap-4"
-									>
-										<kbd className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground shrink-0">
-											{key}
-										</kbd>
-										<span className="text-sm text-muted-foreground">
-											{desc}
-										</span>
-									</div>
-								))}
+			<AlertDialog open={helpOpen} onOpenChange={setHelpOpen}>
+				<AlertDialogContent className="max-w-xs p-5">
+					<AlertDialogTitle>
+						Keyboard Shortcuts
+					</AlertDialogTitle>
+					<div className="mt-3 space-y-2">
+						{SHORTCUTS.map(([key, desc]) => (
+							<div
+								key={key}
+								className="flex items-center justify-between gap-4"
+							>
+								<kbd className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground shrink-0">
+									{key}
+								</kbd>
+								<span className="text-sm text-muted-foreground">
+									{desc}
+								</span>
 							</div>
-							<p className="mt-4 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-								Tips
-							</p>
-							<ul className="mt-1.5 space-y-1 text-xs text-muted-foreground list-disc list-inside">
-								<li>Drag & drop files onto the window</li>
-								<li>Paste a URL or image from clipboard</li>
-								<li>
-									⌘+click to multi-select, then bulk delete / tag / collect
-								</li>
-							</ul>
-							<div className="mt-5 flex justify-end">
-								<AlertDialog.Close render={<Button size="sm" />}>
-									Close
-								</AlertDialog.Close>
-							</div>
-						</AlertDialog.Popup>
-					</AlertDialog.Viewport>
-				</AlertDialog.Portal>
-			</AlertDialog.Root>
+						))}
+					</div>
+					<p className="mt-4 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+						Tips
+					</p>
+					<ul className="mt-1.5 space-y-1 text-xs text-muted-foreground list-disc list-inside">
+						<li>Drag & drop files onto the window</li>
+						<li>Paste a URL or image from clipboard</li>
+						<li>
+							⌘+click to multi-select, then bulk delete / tag / collect
+						</li>
+					</ul>
+					<div className="mt-5 flex justify-end">
+						<AlertDialogClose render={<Button size="sm" />}>
+							Close
+						</AlertDialogClose>
+					</div>
+				</AlertDialogContent>
+			</AlertDialog>
 		</>
 	);
 }
