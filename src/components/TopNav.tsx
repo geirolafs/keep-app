@@ -396,7 +396,7 @@ function TopNav({
 					onMouseLeave={() => setLogoHovered(false)}
 					className={`shrink-0 w-fit text-left select-none text-3xl font-black uppercase leading-none tracking-[-0.03em] text-[#392115] cap-trim transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] origin-left ${scrolled ? "cursor-pointer" : "cursor-default"}`}
 					style={{
-						transform: `scale(${scrolled ? 0.75 : 1}) translateY(${scrolled && logoHovered ? "-4px" : "0px"})`,
+						transform: `scale(0.75) translateY(${scrolled && logoHovered ? "-4px" : "0px"})`,
 					}}
 				>
 					KEEP
@@ -405,7 +405,7 @@ function TopNav({
 				{/* Tabs */}
 				<div
 					className="flex items-center gap-6 transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] origin-center"
-					style={{ transform: scrolled ? "scale(0.75)" : "scale(1)" }}
+					style={{ transform: "scale(0.75)" }}
 				>
 					{TABS.map((tab) => {
 						const isDisabled = tab.id === "bin" && binImages.length === 0;
