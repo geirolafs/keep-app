@@ -5,7 +5,7 @@ use tauri::Manager;
 use tauri_plugin_sql::{Builder as SqlBuilder, Migration, MigrationKind};
 
 fn save_thumb(img: &image::DynamicImage, path: &std::path::Path) -> Result<(), String> {
-    let thumb = img.resize(1600, 1600, FilterType::Lanczos3);
+    let thumb = img.resize(600, 600, FilterType::Lanczos3);
     let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
     let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(file, 85);
     thumb.write_with_encoder(encoder).map_err(|e| e.to_string())
@@ -16,6 +16,14 @@ struct AnalysisResult {
     title: String,
     tags: Vec<String>,
     description: String,
+}
+
+fn compute_thumb_hash(img: &image::DynamicImage) -> Option<String> {
+    let small = img.resize(100, 100, image::imageops::FilterType::Triangle);
+    let rgba = small.to_rgba8();
+    let (w, h) = (small.width() as usize, small.height() as usize);
+    let hash_bytes = thumbhash::rgba_to_thumb_hash(w, h, rgba.as_raw());
+    Some(base64::engine::general_purpose::STANDARD.encode(&hash_bytes))
 }
 
 #[derive(serde::Serialize)]
@@ -31,6 +39,7 @@ struct SavedImage {
     kind: String,
     vision_tags: Vec<String>,
     ocr_text: String,
+    thumb_hash: Option<String>,
 }
 
 // ── macOS Vision Framework helper (silent, zero setup) ────────────────────────
@@ -173,7 +182,7 @@ fn extract_video_frame(path: &std::path::Path) -> Result<Vec<u8>, String> {
 
     std::process::Command::new("/usr/bin/qlmanage")
         .args([
-            "-t", "-s", "800",
+            "-t", "-s", "600",
             "-o", tmp_dir.to_str().unwrap_or("/tmp"),
             path.to_str().unwrap_or(""),
         ])
@@ -246,6 +255,7 @@ async fn process_video_from_path(
         kind: "video".to_string(),
         vision_tags: vec![],
         ocr_text: String::new(),
+        thumb_hash: compute_thumb_hash(&img),
     })
 }
 
@@ -292,6 +302,7 @@ async fn process_and_save(
             kind: "image".to_string(),
             vision_tags: vec![],
             ocr_text: String::new(),
+            thumb_hash: None,
         });
     }
 
@@ -336,6 +347,8 @@ async fn process_and_save(
     let thumb_str = thumb_path.to_string_lossy();
     let (vision_tags, ocr_text) = run_vision(&thumb_str);
 
+    let thumb_hash = compute_thumb_hash(&img);
+
     Ok(SavedImage {
         id,
         file_path: file_path.to_string_lossy().to_string(),
@@ -348,6 +361,7 @@ async fn process_and_save(
         kind: "image".to_string(),
         vision_tags,
         ocr_text,
+        thumb_hash,
     })
 }
 
@@ -447,6 +461,37 @@ async fn refresh_thumbnails(items: Vec<RefreshItem>) -> Result<u32, String> {
         }
     }
     Ok(count)
+}
+
+#[derive(serde::Deserialize)]
+struct HashItem {
+    id: String,
+    thumb_path: String,
+}
+
+#[derive(serde::Serialize)]
+struct HashResult {
+    id: String,
+    thumb_hash: String,
+}
+
+#[tauri::command]
+async fn backfill_thumb_hashes(items: Vec<HashItem>) -> Result<Vec<HashResult>, String> {
+    let mut results = Vec::new();
+    for item in &items {
+        let bytes = match std::fs::read(&item.thumb_path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let img = match image::load_from_memory(&bytes) {
+            Ok(i) => i,
+            Err(_) => continue,
+        };
+        if let Some(hash) = compute_thumb_hash(&img) {
+            results.push(HashResult { id: item.id.clone(), thumb_hash: hash });
+        }
+    }
+    Ok(results)
 }
 
 fn copy_dir_contents(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
@@ -685,6 +730,25 @@ fn copy_image_to_clipboard(file_path: String) -> Result<(), String> {
             bytes: std::borrow::Cow::from(pixels),
         })
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn copy_files_to_clipboard(file_paths: Vec<String>) -> Result<(), String> {
+    let items: Vec<String> = file_paths
+        .iter()
+        .map(|p| format!("POSIX file \"{}\"", p.replace('"', "\\\"")))
+        .collect();
+    let script = format!("set the clipboard to {{{}}}", items.join(", "));
+    let out = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).to_string())
+    }
 }
 
 fn resolve_url(img_url: &str, base_url: &str) -> String {
@@ -1032,6 +1096,12 @@ pub fn run() {
         kind: MigrationKind::Up,
         sql: "ALTER TABLE images ADD COLUMN post_meta TEXT;",
     },
+    Migration {
+        version: 8,
+        description: "add thumb_hash column",
+        kind: MigrationKind::Up,
+        sql: "ALTER TABLE images ADD COLUMN thumb_hash TEXT;",
+    },
     ];
 
     tauri::Builder::default()
@@ -1057,9 +1127,11 @@ pub fn run() {
             generate_prompt,
             export_original,
             copy_image_to_clipboard,
+            copy_files_to_clipboard,
             trash_files,
             save_link,
             get_file_size,
+            backfill_thumb_hashes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

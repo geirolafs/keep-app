@@ -25,6 +25,7 @@ export interface Image {
   kind: string;
   deleted_at: number | null;
   post_meta: string | null;
+  thumb_hash: string | null;
 }
 
 interface SavedImageResult {
@@ -39,6 +40,7 @@ interface SavedImageResult {
   kind: string;
   vision_tags: string[];
   ocr_text: string;
+  thumb_hash: string | null;
 }
 
 interface SavedLinkResult {
@@ -232,6 +234,32 @@ function useImagesState() {
       "SELECT * FROM images WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC"
     );
     setBinImages(binRows);
+
+    // Backfill ThumbHash for images saved before this feature was added.
+    // Runs silently in background; updates DB + state as results arrive.
+    const missing = rows.filter((r) => r.thumb_hash === null && r.kind !== "video" && r.file_path !== r.thumb_path);
+    if (missing.length > 0) {
+      (async () => {
+        const BATCH = 20;
+        for (let i = 0; i < missing.length; i += BATCH) {
+          const batch = missing.slice(i, i + BATCH).map((r) => ({ id: r.id, thumbPath: r.thumb_path }));
+          try {
+            const results = await invoke<{ id: string; thumb_hash: string }[]>("backfill_thumb_hashes", { items: batch.map(b => ({ id: b.id, thumb_path: b.thumbPath })) });
+            if (results.length > 0) {
+              await Promise.all(results.map((r) =>
+                db.execute("UPDATE images SET thumb_hash = $1 WHERE id = $2", [r.thumb_hash, r.id])
+              ));
+              setImages((prev) => prev.map((img) => {
+                const hit = results.find((r) => r.id === img.id);
+                return hit ? { ...img, thumb_hash: hit.thumb_hash } : img;
+              }));
+            }
+          } catch {
+            break;
+          }
+        }
+      })();
+    }
   }, []);
 
   const saveBlob = useCallback(async (blob: Blob) => {
@@ -251,14 +279,14 @@ function useImagesState() {
 
       const db = await getDb();
       await db.execute(
-        `INSERT INTO images (id, file_path, thumb_path, width, height, dominant_color, palette, created_at, updated_at, kind)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9)`,
-        [saved.id, saved.file_path, saved.thumb_path, saved.width, saved.height, saved.dominant_color, saved.palette, saved.created_at, saved.kind]
+        `INSERT INTO images (id, file_path, thumb_path, width, height, dominant_color, palette, created_at, updated_at, kind, thumb_hash)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10)`,
+        [saved.id, saved.file_path, saved.thumb_path, saved.width, saved.height, saved.dominant_color, saved.palette, saved.created_at, saved.kind, saved.thumb_hash ?? null]
       );
       await insertVisionData(db, saved.id, saved.vision_tags, saved.ocr_text);
 
       setImages((prev) => [
-        { ...saved, source_url: null, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null, post_meta: null },
+        { ...saved, source_url: null, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null, post_meta: null, thumb_hash: saved.thumb_hash ?? null },
         ...prev,
       ]);
     } catch (err) {
@@ -281,14 +309,14 @@ function useImagesState() {
 
       const db = await getDb();
       await db.execute(
-        `INSERT INTO images (id, file_path, thumb_path, width, height, dominant_color, palette, created_at, updated_at, kind)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9)`,
-        [saved.id, saved.file_path, saved.thumb_path, saved.width, saved.height, saved.dominant_color, saved.palette, saved.created_at, saved.kind]
+        `INSERT INTO images (id, file_path, thumb_path, width, height, dominant_color, palette, created_at, updated_at, kind, thumb_hash)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10)`,
+        [saved.id, saved.file_path, saved.thumb_path, saved.width, saved.height, saved.dominant_color, saved.palette, saved.created_at, saved.kind, saved.thumb_hash ?? null]
       );
       await insertVisionData(db, saved.id, saved.vision_tags, saved.ocr_text);
 
       setImages((prev) => [
-        { ...saved, source_url: null, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null, post_meta: null },
+        { ...saved, source_url: null, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null, post_meta: null, thumb_hash: saved.thumb_hash ?? null },
         ...prev,
       ]);
     } catch (err) {
@@ -311,14 +339,14 @@ function useImagesState() {
 
       const db = await getDb();
       await db.execute(
-        `INSERT INTO images (id, file_path, thumb_path, source_url, width, height, dominant_color, palette, created_at, updated_at, kind)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10)`,
-        [saved.id, saved.file_path, saved.thumb_path, url, saved.width, saved.height, saved.dominant_color, saved.palette, saved.created_at, saved.kind]
+        `INSERT INTO images (id, file_path, thumb_path, source_url, width, height, dominant_color, palette, created_at, updated_at, kind, thumb_hash)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11)`,
+        [saved.id, saved.file_path, saved.thumb_path, url, saved.width, saved.height, saved.dominant_color, saved.palette, saved.created_at, saved.kind, saved.thumb_hash ?? null]
       );
       await insertVisionData(db, saved.id, saved.vision_tags, saved.ocr_text);
 
       setImages((prev) => [
-        { ...saved, source_url: url, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null, post_meta: null },
+        { ...saved, source_url: url, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null, post_meta: null, thumb_hash: saved.thumb_hash ?? null },
         ...prev,
       ]);
     } catch (err) {
@@ -343,7 +371,7 @@ function useImagesState() {
       let title: string | null = null;
       try { title = JSON.parse(saved.post_meta)?.title ?? null; } catch {}
       setImages((prev) => [
-        { ...saved, source_url: url, title, notes: null, description: null, ocr_text: null, deleted_at: null, kind: "link", post_meta: saved.post_meta },
+        { ...saved, source_url: url, title, notes: null, description: null, ocr_text: null, deleted_at: null, kind: "link", post_meta: saved.post_meta, thumb_hash: null },
         ...prev,
       ]);
     } catch (err) {
