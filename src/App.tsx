@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Toast } from "@base-ui/react/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ToastList } from "@/components/ui/toast-viewport";
-import { toastManager } from "@/lib/toast";
+import { Toaster } from "@/components/ui/sonner";
 import TopNav, { type Tab, type Sort, type TopNavHandle } from "@/components/TopNav";
 import Grid, { type GridHandle } from "@/components/Grid";
 import { CmdKDialog } from "@/components/CmdKDialog";
@@ -130,7 +128,7 @@ function AppContent() {
   return (
     <TooltipProvider>
       <div className="relative h-screen overflow-hidden bg-background text-foreground">
-        <div ref={navContainerRef} data-tauri-drag-region className="absolute top-0 left-0 right-0 z-10">
+        <div ref={navContainerRef} data-tauri-drag-region className="absolute top-0 left-0 right-0 z-20">
         <TopNav
           ref={topNavRef}
           scrolled={scrolled}
@@ -177,7 +175,7 @@ function AppContent() {
         onOpenCollection={(id) => dispatch({ type: "setTabAndSelect", tab: "collections", selectedId: id })}
         onOpenTag={(id) => dispatch({ type: "setTabAndSelect", tab: "tags", selectedId: id })}
       />
-      <ToastList />
+      <Toaster closeButton />
     </TooltipProvider>
   );
 }
@@ -187,9 +185,7 @@ export default function App() {
     <ImagesProvider>
       <TagsProvider>
         <CollectionsProvider>
-          <Toast.Provider toastManager={toastManager}>
-            <AppContent />
-          </Toast.Provider>
+          <AppContent />
         </CollectionsProvider>
       </TagsProvider>
     </ImagesProvider>

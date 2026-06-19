@@ -214,3 +214,14 @@
   .lightbox-overlay[data-open] { transition: none; }
   .lightbox-image { animation: none; }
 }
+
+/* Sonner: hide close button until toast is hovered */
+[data-sonner-toast] [data-close-button] {
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+@media (hover: hover) and (pointer: fine) {
+  [data-sonner-toast]:hover [data-close-button] {
+    opacity: 1;
+  }
+}

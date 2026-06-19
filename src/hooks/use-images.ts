@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import Database from "@tauri-apps/plugin-sql";
-import { toastManager } from "@/lib/toast";
+import { toast } from "@/lib/toast";
 import { sendNotification } from "@tauri-apps/plugin-notification";
 
 export type PendingItem = { id: string; label: string }
@@ -133,7 +133,7 @@ export async function devSaveExample(n: number) {
     await invoke("save_example_snapshot", { n, snapshotJson: JSON.stringify(snapshot) });
   } catch (err) {
     console.error("[keep] saveExample failed:", err);
-    toastManager.add({ title: "Failed to save example", type: "error" });
+    toast.error("Failed to save example");
   }
 }
 
@@ -166,7 +166,7 @@ export async function devLoadExample(n: number) {
     window.location.reload();
   } catch (err) {
     console.error("[keep] loadExample failed:", err);
-    toastManager.add({ title: String(err), type: "error" });
+    toast.error(String(err));
   }
 }
 
@@ -190,7 +190,7 @@ export async function refreshThumbnails(
     window.location.reload();
   } catch (err) {
     console.error("[keep] refreshThumbnails failed:", err);
-    toastManager.add({ title: String(err), type: "error" });
+    toast.error(String(err));
   }
 }
 
@@ -291,7 +291,7 @@ function useImagesState() {
       ]);
     } catch (err) {
       console.error("[keep] saveBlob failed:", err);
-      toastManager.add({ title: "Failed to save image", type: "error" });
+      toast.error("Failed to save image");
     } finally {
       removePending(tempId);
     }
@@ -321,7 +321,7 @@ function useImagesState() {
       ]);
     } catch (err) {
       console.error("[keep] savePath failed:", err);
-      toastManager.add({ title: "Failed to save image", type: "error" });
+      toast.error("Failed to save image");
     } finally {
       removePending(tempId);
     }
@@ -351,7 +351,7 @@ function useImagesState() {
       ]);
     } catch (err) {
       console.error("[keep] saveUrl failed:", err);
-      toastManager.add({ title: "Failed to save image", type: "error" });
+      toast.error("Failed to save image");
     } finally {
       removePending(tempId);
     }
@@ -377,7 +377,7 @@ function useImagesState() {
     } catch (err) {
       console.error("[keep] saveLink failed:", err);
       const msg = typeof err === "string" ? err : "Failed to save link";
-      toastManager.add({ title: msg, type: "error" });
+      toast.error(msg);
     } finally {
       removePending(tempId);
     }
@@ -398,7 +398,7 @@ function useImagesState() {
       }
     } catch (err) {
       console.error("[keep] softDelete failed:", err);
-      toastManager.add({ title: "Failed to delete image", type: "error" });
+      toast.error("Failed to delete image");
     }
   }, []);
 
@@ -416,7 +416,7 @@ function useImagesState() {
       }
     } catch (err) {
       console.error("[keep] restoreImage failed:", err);
-      toastManager.add({ title: "Failed to restore", type: "error" });
+      toast.error("Failed to restore");
     }
   }, []);
 
@@ -430,7 +430,7 @@ function useImagesState() {
       setBinImages((prev) => prev.filter((i) => i.id !== id));
     } catch (err) {
       console.error("[keep] permanentDelete failed:", err);
-      toastManager.add({ title: "Failed to delete", type: "error" });
+      toast.error("Failed to delete");
     }
   }, []);
 
@@ -447,7 +447,7 @@ function useImagesState() {
       setBinImages([]);
     } catch (err) {
       console.error("[keep] emptyBin failed:", err);
-      toastManager.add({ title: "Failed to empty bin", type: "error" });
+      toast.error("Failed to empty bin");
     }
   }, []);
 
@@ -480,7 +480,7 @@ function useImagesState() {
       );
     } catch (err) {
       console.error("[keep] updateNotes failed:", err);
-      toastManager.add({ title: "Failed to save note", type: "error" });
+      toast.error("Failed to save note");
     }
   }, []);
 
@@ -551,7 +551,7 @@ function useImagesState() {
       await invoke("save_example_snapshot", { n, snapshotJson: JSON.stringify(snapshot) });
     } catch (err) {
       console.error("[keep] saveExample failed:", err);
-      toastManager.add({ title: "Failed to save example", type: "error" });
+      toast.error("Failed to save example");
     }
   }, []);
 
@@ -598,7 +598,7 @@ function useImagesState() {
       window.location.reload();
     } catch (err) {
       console.error("[keep] loadExample failed:", err);
-      toastManager.add({ title: String(err), type: "error" });
+      toast.error(String(err));
     }
   }, []);
 
