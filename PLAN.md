@@ -156,6 +156,8 @@ Add support for additional file formats beyond the current `png | jpg | jpeg | g
 - [x] **Image dimensions + format**: `{width} × {height} · {EXT}` in sidebar date/source section; hidden for SVGs (width=0).
 - [x] **Reveal in Finder**: `revealItemInDir(file_path)` via `@tauri-apps/plugin-opener`; shown as "Reveal" link next to Source in lightbox sidebar.
 - [x] **Export original**: "Export" (Tauri `dialog::save` picker, defaults to `~/Downloads/<filename>`, `export_original` Rust command) + "Copy" (decodes to RGBA → macOS clipboard via `arboard` crate, `copy_image_to_clipboard` Rust command; hidden for SVG/video). Both next to Reveal in lightbox date/source row.
+- [x] **⌘C copies video frame**: key handler routes ⌘C to `copy_image_bytes_to_clipboard` Rust command for videos — draws current frame to canvas → PNG base64 → `arboard`; handles both `kind:'video'` and `kind:'link'` mp4/mov/webm records. Works while playing or paused.
+- [x] **Cursor polish**: grid cards use `cursor-default` (no Live Text i-beam in grid); lightbox image viewer uses `cursor:auto` (re-enables macOS Live Text OCR hover cursor). OCR text-selection alignment fixed by moving `p-8` padding from `<img>` to wrapper `<div>` so element bounds match displayed content.
 - [x] **Analyze button**: replaced `✨ Analyze` emoji text with `RiSparkling2Line` icon + "Analyze" label, matching Settings modal style.
 
 #### Dev Tools
@@ -377,6 +379,7 @@ load_example_snapshot(slot)                     -> Vec<ImageRecord>
 reveal_item_in_dir(path)                        -- via tauri-plugin-opener
 export_original(file_path, dest_path)           -- copy bytes to user-chosen path
 copy_image_to_clipboard(file_path)              -- decode → RGBA → macOS clipboard via arboard
+copy_image_bytes_to_clipboard(png_base64)       -- base64 PNG bytes → macOS clipboard (used for video frame copy)
 generate_prompt(thumb_path, api_key, model)     -> String  -- Midjourney/DALL-E/Flux style prompt via google/gemini-2.5-flash
 save_link(url)                                  -> SavedLink  -- og: scrape + yt-dlp for tweets; kind='link'
 get_file_size(file_path)                        -> u64        -- fs::metadata().len(); used in lightbox
