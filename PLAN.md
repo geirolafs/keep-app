@@ -132,6 +132,7 @@ Add support for additional file formats beyond the current `png | jpg | jpeg | g
 - [x] **Video slow-mo in grid**: `onLoadedData` → `playbackRate = 0.25` (always slow); `onMouseEnter` → `1`; `onMouseLeave` → `0.25`. Hover plays at normal speed, idle plays in slow-mo.
 - [x] **Ghost cards for in-progress saves**: `PendingItem` type + `pendingItems` state in `ImagesContext`; `addPending(label)` called before each `invoke`, `removePending(id)` in `finally`; pending items prepended to masonry column distribution so ghost card appears inline at position 0 (same layout as real cards); shimmer + spinner + truncated URL label. Covers saveBlob, savePath, saveUrl, saveLink.
 - [x] **Cursor fix**: removed `cursor-pointer` from masonry cards, collection squares, BinView cards, context menu items — default arrow cursor matches native macOS app behavior. `<a>` tags retain browser-default pointer.
+- [x] **Collection drag-to-reorder**: `@dnd-kit/core` + `@dnd-kit/sortable` — `DndContext` + `SortableContext` wrap collection grid; `SortableCollectionCard` uses `useSortable`; `reorderCollections(orderedIds)` persists to `sort_order` column (schema migration v9); new collection prepended (lowest `sort_order - 1`); adding image to collection bubbles that collection to top of sidebar list
 - [x] **Sort by name**: `Sort` type extended to `"newest" | "oldest" | "name-az" | "name-za"`; toggle cycles through all 4 states; button shows icon + "Date"/"Name" label; Grid sorts by `title ?? file_path` via `localeCompare`.
 
 #### Help & Shortcuts
@@ -159,6 +160,10 @@ Add support for additional file formats beyond the current `png | jpg | jpeg | g
 - [x] **⌘C copies video frame**: key handler routes ⌘C to `copy_image_bytes_to_clipboard` Rust command for videos — draws current frame to canvas → PNG base64 → `arboard`; handles both `kind:'video'` and `kind:'link'` mp4/mov/webm records. Works while playing or paused.
 - [x] **Cursor polish**: grid cards use `cursor-default` (no Live Text i-beam in grid); lightbox image viewer uses `cursor:auto` (re-enables macOS Live Text OCR hover cursor). OCR text-selection alignment fixed by moving `p-8` padding from `<img>` to wrapper `<div>` so element bounds match displayed content.
 - [x] **Analyze button**: replaced `✨ Analyze` emoji text with `RiSparkling2Line` icon + "Analyze" label, matching Settings modal style.
+- [x] **Tag skeleton shimmer during analysis**: while `analyzing`, tag chips replaced with 4 Skeleton placeholders so the sidebar doesn't jump; badge component (`<Badge variant="pill">`) replaces raw `<span>` for tag + collection chips
+- [x] **Description fixed height**: textarea height fixed to `70px` (was `rows={3}`) to avoid layout shift
+- [x] **Scrollable prompt text**: prompt container gets `max-h-48 overflow-y-auto` for long prompts
+- [x] **Collection picker polish**: renamed `colMenuOpen` → `colPickerOpen`; "New collection…" section separated by a border; existing collections in `max-h-[200px] overflow-y-auto` scroll region; uses `onMouseDown + e.preventDefault()` to avoid blur race
 
 #### Dev Tools
 - [x] **Settings modal consolidation**: Save E1, Load E1, Reset (2-step inline confirm), Randomize Order button, Refresh Thumbs button all moved to Settings → Developer section (DEV-only). Toolbar now only has Analyze All + Add.
@@ -167,6 +172,7 @@ Add support for additional file formats beyond the current `png | jpg | jpeg | g
 #### Notifications & Toasts
 - [x] **macOS OS notifications**: `tauri-plugin-notification` added (Cargo.toml, lib.rs, capabilities); `@tauri-apps/plugin-notification` JS package; `sendNotification` (fire-and-forget, silent on permission denial) fires after: Analyze All complete, Vision scan done, Refresh Thumbnails done — operations where user may have walked away.
 - [x] **Toast cleanup**: removed success/info toasts for all CRUD ops (save, delete, restore, bin empty, tag rename/delete, collection create/rename/delete) — UI change is the confirmation. Kept: all `type:"error"` toasts + brief copy confirmations ("Copied to clipboard", "Copied hex", "Prompt copied").
+- [x] **Toast migration to sonner**: replaced `@base-ui/react/toast` (`Toast.Provider` + custom `ToastList`) with `sonner` (`<Toaster closeButton>` + `toast.error/success()`); close button hidden until hover via CSS; `src/components/ui/toast-viewport.tsx` deleted; `toastManager.add({...})` → `toast.error/success(...)`
 
 #### AI Analysis
 - [x] **SVG analysis**: rasterize via `qlmanage` (reuses video frame extractor, no new dep) → PNG → `image/png` to vision API
@@ -189,23 +195,24 @@ Two-tier approach: instant auto-tagging on every save (zero setup) + optional fu
 - [x] Schema migration v6: `ALTER TABLE images ADD COLUMN ocr_text TEXT`; included in search filter
 - [x] **Scan with Vision** button in Settings AI section — `backfillVision()` loops unindexed images (`ocr_text IS NULL`), calls `analyze_vision_item` Rust command, inserts tags + sets `ocr_text`; progress + cancel; reloads on complete
 
-##### Tier 2 — Moondream2 (full local vision LLM, ~1.3 GB one-time download)
+##### Tier 2 — Qwen2.5-VL-3B (full local vision LLM, ~3.3 GB one-time download)
 
 Replaces `analyze_image` (title + tags + description) with a fully local pipeline. No network call, no API key.
 
-- [ ] Settings → AI section: **"Download KEEP AI (1.3 GB)"** button
-  - Downloads `moondream2-text-model.gguf` (~1.1 GB, Q4_K_M) + `moondream2-mmproj.gguf` (~200 MB) to `{app_data}/models/`
+- [x] Settings → AI section: **"Download KEEP AI (3.3 GB)"** button
+  - Downloads `Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf` (~2.1 GB) + `mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf` (~1.2 GB) to `{app_data}/models/`
   - Inline download progress bar; resumable on restart
-  - Button shows "KEEP AI Ready ✓" when model files are present
-- [ ] Bundle precompiled `llava-cli` binary (llama.cpp multimodal, arm64-apple-darwin) as Tauri `externalBin`
-  - Metal backend: Apple Silicon GPU acceleration, ~2–4s per image on M1+
-- [ ] Rust: `analyze_local(thumb_path)` — shell out to `llava-cli --model moondream2.gguf --mmproj moondream2-mmproj.gguf --image {thumb} --prompt "..."` → parse JSON output
-- [ ] Routing logic in `analyze_image` Rust command:
-  1. Model files present → `analyze_local()` (no network)
-  2. Model absent + `api_key` present → OpenRouter (current behavior)
-  3. Neither → return descriptive error: "Download KEEP AI in Settings, or add an API key"
-- [ ] `generate_prompt` does **not** use local model — local vision LLMs are noticeably weaker at creative prompt generation than large cloud models. Keep OpenRouter/Gemini for this feature only.
-- [ ] Relabel OpenRouter field in Settings: **"Advanced: use cloud model"** (not primary path)
+  - Button shows "KEEP AI Ready ✓" + **Delete** (trash icon, moves models to macOS Trash via `trash` crate) when present
+- [x] Bundle `llama-mtmd-cli-aarch64-apple-darwin` as Tauri sidecar (`externalBin`); dev mode falls back to `/opt/homebrew/bin/llama-mtmd-cli`
+- [x] Rust: `analyze_local(thumb_path)` — shells out to `llama-mtmd-cli -m text.gguf --mmproj mmproj.gguf --image {thumb} -p "..." --json-schema {schema} -ngl 99` → parse JSON; `sentence_case_result()` normalises title casing
+- [x] Routing logic in `analyze_image` + `generate_prompt`:
+  1. `ai_source == "local"` (or no API key) + models present → `analyze_local()` / `generate_prompt_local()` (no network)
+  2. `ai_source == "cloud"` + `api_key` present → OpenRouter (existing path)
+  3. Neither → descriptive error
+- [x] `generate_prompt` now has local path via `generate_prompt_local()` — plain text (no JSON schema), same `llama-mtmd-cli` binary
+- [x] **Local/Cloud source toggle** in Settings AI section — radio buttons (Local / Cloud); persisted to `settings` (`ai_source`); local radio shows model status / download inline; cloud radio shows API key + model fields
+- [x] `delete_local_model` Rust command — moves both model files to macOS Trash via `trash` crate
+- [x] Rust commands: `get_local_model_status` → `{present: bool}`, `download_model_file(url, filename)` → streams to `{app_data}/models/` with progress events
 
 #### Social URL Cards (paste URL → rich card)
 - [x] Detect pasted URL as a tweet (`x.com/*/status/*`) or generic social/web URL
@@ -350,8 +357,10 @@ CREATE TABLE image_tags (
 );
 
 CREATE TABLE collections (
-  id   TEXT PRIMARY KEY,         -- UUIDv7
-  name TEXT UNIQUE NOT NULL
+  id         TEXT PRIMARY KEY,   -- UUIDv7
+  name       TEXT UNIQUE NOT NULL,
+  -- v9 (Phase 7)
+  sort_order INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE collection_images (
@@ -380,9 +389,12 @@ reveal_item_in_dir(path)                        -- via tauri-plugin-opener
 export_original(file_path, dest_path)           -- copy bytes to user-chosen path
 copy_image_to_clipboard(file_path)              -- decode → RGBA → macOS clipboard via arboard
 copy_image_bytes_to_clipboard(png_base64)       -- base64 PNG bytes → macOS clipboard (used for video frame copy)
-generate_prompt(thumb_path, api_key, model)     -> String  -- Midjourney/DALL-E/Flux style prompt via google/gemini-2.5-flash
+generate_prompt(thumb_path, api_key, model)     -> String  -- Midjourney/DALL-E/Flux prompt; local (llama-mtmd-cli) if no api_key + models present, else OpenRouter
 save_link(url)                                  -> SavedLink  -- og: scrape + yt-dlp for tweets; kind='link'
 get_file_size(file_path)                        -> u64        -- fs::metadata().len(); used in lightbox
+get_local_model_status()                        -> {present: bool}
+download_model_file(url, filename)              -- streams to {app_data}/models/, emits progress events
+delete_local_model()                            -- moves both model files to macOS Trash via trash crate
 ```
 
 ---
