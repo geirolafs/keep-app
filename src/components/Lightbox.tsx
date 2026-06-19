@@ -137,8 +137,28 @@ export function Lightbox({
   const { titleEditing, titleValue, notesValue, descriptionValue, tagInput, creatingCol, newColInput, analyzing, promptValue, generatingPrompt } = edit;
   const tagInputRef = useRef<HTMLInputElement>(null);
   const [fileSize, setFileSize] = useState<number | null>(null);
+  const descRef = useRef<HTMLTextAreaElement>(null);
+  const [showDescFade, setShowDescFade] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const imageAreaRef = useRef<HTMLDivElement>(null);
+  const displayImageRef = useRef<Image | null>(null);
+  const isPanningRef = useRef(false);
+  const panStartRef = useRef<{ mx: number; my: number; px: number; py: number } | null>(null);
 
   const image = currentIndex !== null ? images[currentIndex] : null;
+
+  // Animation refs — keep last-known image/index so exit fade has content to show
+  const hasOpenedRef = useRef(false);
+  const lastImageRef = useRef<Image | null>(null);
+  const lastIndexRef = useRef<number | null>(null);
+  if (image) { hasOpenedRef.current = true; lastImageRef.current = image; }
+  if (currentIndex !== null) lastIndexRef.current = currentIndex;
+  const isOpen = currentIndex !== null;
+  const displayImage = image ?? lastImageRef.current;
+  const displayIndex = currentIndex ?? lastIndexRef.current;
+  displayImageRef.current = displayImage;
 
   // Sync state when image changes
   useEffect(() => {
@@ -149,12 +169,28 @@ export function Lightbox({
         notes: image.notes ?? "",
         description: image.description ?? "",
       });
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
       setFileSize(null);
       invoke<number>("get_file_size", { filePath: image.file_path })
         .then(setFileSize)
         .catch(() => {});
     }
   }, [currentIndex, image?.id]);
+
+  // Show scroll-fade hint when description overflows 3 rows
+  useEffect(() => {
+    const el = descRef.current;
+    if (!el) return;
+    // rAF so the DOM has painted with the new value before we measure
+    requestAnimationFrame(() => setShowDescFade(el.scrollHeight > el.clientHeight + 2));
+  }, [descriptionValue]);
+
+  const handleDescScroll = () => {
+    const el = descRef.current;
+    if (!el) return;
+    setShowDescFade(el.scrollTop === 0);
+  };
 
   // Auto-analyze when image opens (if mode is not manual)
   useEffect(() => {
@@ -195,10 +231,11 @@ export function Lightbox({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [image?.id]);
 
-  // Keyboard navigation
+  // Keyboard navigation + zoom shortcuts
   useEffect(() => {
     if (currentIndex === null) return;
     const handler = (e: KeyboardEvent) => {
+      const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
       if (e.key === "Escape") {
         if (titleEditing && image) onUpdateTitle(image.id, titleValue.trim());
         onClose();
@@ -206,38 +243,104 @@ export function Lightbox({
         onNavigate(currentIndex - 1);
       } else if (e.key === "ArrowRight" && currentIndex < images.length - 1) {
         onNavigate(currentIndex + 1);
+      } else if ((e.key === "+" || e.key === "=") && !typing) {
+        setZoom(z => Math.min(z * 1.5, 8));
+      } else if (e.key === "-" && !typing) {
+        setZoom(z => {
+          const newZ = Math.max(z / 1.5, 1);
+          if (newZ <= 1) { setPan({ x: 0, y: 0 }); return 1; }
+          return newZ;
+        });
+      } else if (e.key === "0" && !typing) {
+        setZoom(1);
+        setPan({ x: 0, y: 0 });
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [currentIndex, images.length, onClose, onNavigate, titleEditing, titleValue, image, onUpdateTitle]);
 
-  if (currentIndex === null || !image) return null;
+  // Scroll-to-zoom on image area (non-passive so we can preventDefault)
+  useEffect(() => {
+    if (!isOpen) return;
+    const el = imageAreaRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      const di = displayImageRef.current;
+      if (!di || di.kind === "video") return;
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const factor = Math.pow(1.12, -e.deltaY / 100);
+      setZoom(z => {
+        const newZoom = Math.min(Math.max(z * factor, 1), 8);
+        if (newZoom <= 1) {
+          setPan({ x: 0, y: 0 });
+          return 1;
+        }
+        const ox = e.clientX - rect.left - rect.width / 2;
+        const oy = e.clientY - rect.top - rect.height / 2;
+        const ratio = newZoom / z;
+        setPan(p => ({
+          x: ox * (1 - ratio) + p.x * ratio,
+          y: oy * (1 - ratio) + p.y * ratio,
+        }));
+        return newZoom;
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [isOpen]);
 
-  const isSvg = image.file_path.toLowerCase().endsWith(".svg");
-  const isVideo = image.kind === "video";
-  const isLink = image.kind === "link";
-  const isLinkVideo = isLink && /\.(mp4|mov|webm)$/i.test(image.file_path);
-  const imageTags = imageTagsMap.get(image.id) ?? [];
-  const imageCollections = imageCollectionsMap.get(image.id) ?? [];
+  // Global mouse handlers for panning
+  useEffect(() => {
+    if (!isOpen) return;
+    const onMove = (e: MouseEvent) => {
+      if (!isPanningRef.current || !panStartRef.current) return;
+      const { mx, my, px, py } = panStartRef.current;
+      setPan({ x: px + (e.clientX - mx), y: py + (e.clientY - my) });
+    };
+    const onUp = () => {
+      if (isPanningRef.current) {
+        isPanningRef.current = false;
+        setIsPanning(false);
+      }
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [isOpen]);
+
+  if (!hasOpenedRef.current || !displayImage || displayIndex === null) return null;
+
+  const isSvg = displayImage.file_path.toLowerCase().endsWith(".svg");
+  const isVideo = displayImage.kind === "video";
+  const isLink = displayImage.kind === "link";
+  const isLinkVideo = isLink && /\.(mp4|mov|webm)$/i.test(displayImage.file_path);
+  const imageTags = imageTagsMap.get(displayImage.id) ?? [];
+  const imageCollections = imageCollectionsMap.get(displayImage.id) ?? [];
   const unassignedCollections = collections.filter(
     (c) => !imageCollections.some((ic) => ic.id === c.id)
   );
 
   let palette: string[] = [];
   try {
-    palette = image.palette ? (JSON.parse(image.palette) as string[]) : [];
+    palette = displayImage.palette ? (JSON.parse(displayImage.palette) as string[]) : [];
   } catch {
     // ignore malformed palette
   }
 
   const saveTitle = () => {
+    if (!image) return;
     const trimmed = titleValue.trim();
     onUpdateTitle(image.id, trimmed);
     dispatch({ type: "setTitleEditing", value: false });
   };
 
   const handleAddTag = async (name: string) => {
+    if (!image) return;
     const trimmed = name.trim();
     if (!trimmed) return;
     await addTag(image.id, trimmed);
@@ -296,6 +399,7 @@ export function Lightbox({
   };
 
   const handleExport = async () => {
+    if (!image) return;
     const filename = image.file_path.split("/").pop() ?? "image";
     const destPath = await saveDialog({ defaultPath: `~/Downloads/${filename}` });
     if (!destPath) return;
@@ -307,6 +411,7 @@ export function Lightbox({
   };
 
   const handleCopy = async () => {
+    if (!image) return;
     try {
       await invoke("copy_image_to_clipboard", { filePath: image.file_path });
       toastManager.add({ title: "Copied to clipboard", type: "success", timeout: 1500 });
@@ -315,7 +420,7 @@ export function Lightbox({
     }
   };
 
-  const date = new Date(image.created_at).toLocaleDateString(undefined, {
+  const date = new Date(displayImage.created_at).toLocaleDateString(undefined, {
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -323,42 +428,64 @@ export function Lightbox({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex"
+      className="fixed inset-0 z-50 flex lightbox-overlay"
+      data-open={isOpen || undefined}
       style={{ background: isSvg
         ? "repeating-conic-gradient(#d0d0d0 0% 25%, #f8f8f8 0% 50%) 0 0 / 24px 24px"
         : (isLink && palette.length === 0 ? "#111" : buildMeshBackground(palette)) }}
-
     >
       {/* Image area */}
-      <div className="relative flex flex-1 items-center justify-center overflow-hidden">
+      <div ref={imageAreaRef} className="relative flex flex-1 items-center justify-center overflow-hidden">
         {isVideo || isLinkVideo ? (
-          <video
-            aria-label="Video player"
-            src={imgSrc(image.file_path)}
-            controls
-            autoPlay
-            className="max-h-[90vh] max-w-full p-8"
-            draggable={false}
-          />
-        ) : isLink && image.width === 0 ? (
+          <div className="overflow-hidden rounded-xl shadow-2xl">
+            <video
+              key={displayImage.id}
+              aria-label="Video player"
+              src={imgSrc(displayImage.file_path)}
+              controls
+              autoPlay
+              className="block max-h-[65vh] max-w-full"
+              draggable={false}
+            />
+          </div>
+        ) : isLink && displayImage.width === 0 ? (
           // Link with no usable image — show domain pill
           <div className="flex flex-col items-center gap-3 text-white/40 select-none">
             <RiExternalLinkLine className="size-12 opacity-30" />
             <span className="text-sm">
               {(() => {
                 try {
-                  const m = JSON.parse(image.post_meta ?? "{}") as { siteName?: string; url?: string };
+                  const m = JSON.parse(displayImage.post_meta ?? "{}") as { siteName?: string; url?: string };
                   return m.siteName ?? m.url?.split("://")[1]?.split("/")[0] ?? "Link";
                 } catch { return "Link"; }
               })()}
             </span>
           </div>
         ) : (
-          <>
+          <div
+            style={{
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              transformOrigin: "center center",
+              transition: "none",
+              cursor: zoom > 1 ? (isPanning ? "grabbing" : "grab") : "default",
+            }}
+            onMouseDown={(e) => {
+              if (zoom <= 1) return;
+              e.preventDefault();
+              isPanningRef.current = true;
+              setIsPanning(true);
+              panStartRef.current = { mx: e.clientX, my: e.clientY, px: pan.x, py: pan.y };
+            }}
+            onDoubleClick={() => {
+              if (zoom > 1) { setZoom(1); setPan({ x: 0, y: 0 }); }
+              else setZoom(2);
+            }}
+          >
             <img
-              src={imgSrc(image.file_path)}
-              alt={image.title ?? ""}
-              className="max-h-[90vh] max-w-full object-contain p-8"
+              key={displayImage.id}
+              src={imgSrc(displayImage.file_path)}
+              alt={displayImage.title ?? ""}
+              className="max-h-[90vh] max-w-full object-contain p-8 lightbox-image"
               draggable={false}
               onError={(e) => {
                 e.currentTarget.style.display = "none";
@@ -369,15 +496,22 @@ export function Lightbox({
             <div hidden className="flex h-48 w-48 items-center justify-center rounded-xl bg-white/10 text-white/50 text-sm">
               Image file missing
             </div>
-          </>
+          </div>
+        )}
+
+        {/* Zoom level indicator */}
+        {zoom > 1 && (
+          <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full bg-black/60 px-2.5 py-1 text-xs text-white/80 backdrop-blur-sm select-none">
+            {(Math.round(zoom * 10) / 10).toFixed(1)}×
+          </div>
         )}
 
         {/* Prev button */}
-        {currentIndex > 0 && (
+        {displayIndex > 0 && (
           <button
             type="button"
-            onClick={() => onNavigate(currentIndex - 1)}
-            className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 hover:bg-white/20 p-2 text-white transition-colors"
+            onClick={() => onNavigate(displayIndex - 1)}
+            className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 hover:bg-white/20 p-2 text-white transition-[transform,background-color] duration-[160ms] ease-out active:scale-[0.97]"
             aria-label="Previous image"
           >
             <RiArrowLeftLine className="h-5 w-5" />
@@ -385,11 +519,11 @@ export function Lightbox({
         )}
 
         {/* Next button */}
-        {currentIndex < images.length - 1 && (
+        {displayIndex < images.length - 1 && (
           <button
             type="button"
-            onClick={() => onNavigate(currentIndex + 1)}
-            className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 hover:bg-white/20 p-2 text-white transition-colors"
+            onClick={() => onNavigate(displayIndex + 1)}
+            className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 hover:bg-white/20 p-2 text-white transition-[transform,background-color] duration-[160ms] ease-out active:scale-[0.97]"
             aria-label="Next image"
           >
             <RiArrowRightLine className="h-5 w-5" />
@@ -400,7 +534,7 @@ export function Lightbox({
         <button
           type="button"
           onClick={onClose}
-          className="absolute top-4 right-4 rounded-full bg-white/10 hover:bg-white/20 p-2 text-white transition-colors"
+          className="absolute top-4 right-4 rounded-full bg-white/10 hover:bg-white/20 p-2 text-white transition-[transform,background-color] duration-[160ms] ease-out active:scale-[0.97]"
           aria-label="Close lightbox"
         >
           <RiCloseLine className="h-5 w-5" />
@@ -434,13 +568,13 @@ export function Lightbox({
               className="cursor-text text-xl font-semibold text-left"
               onClick={() => dispatch({ type: "setTitleEditing", value: true })}
             >
-              {image.title || "Untitled"}
+              {displayImage.title || "Untitled"}
             </button>
           )}
         </div>
 
         {/* Link card metadata */}
-        {isLink && <PostCard image={image} />}
+        {isLink && <PostCard image={displayImage} />}
 
         {/* Description */}
         <div className="border-b border-border/50 px-5 py-3">
@@ -472,15 +606,24 @@ export function Lightbox({
               <Skeleton className="h-3.5 w-4/6" />
             </div>
           ) : (
-            <textarea
-              aria-label="Description"
-              value={descriptionValue}
-              onChange={(e) => dispatch({ type: "setDescriptionValue", value: e.target.value })}
-              onBlur={() => { if (image) onUpdateDescription(image.id, descriptionValue); }}
-              placeholder="No description yet…"
-              rows={3}
-              className="w-full resize-none bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground/50"
-            />
+            <div
+              style={showDescFade ? {
+                WebkitMaskImage: "linear-gradient(to bottom, black 45%, transparent 100%)",
+                maskImage: "linear-gradient(to bottom, black 45%, transparent 100%)",
+              } : undefined}
+            >
+              <textarea
+                ref={descRef}
+                aria-label="Description"
+                value={descriptionValue}
+                onChange={(e) => dispatch({ type: "setDescriptionValue", value: e.target.value })}
+                onBlur={() => { if (image) onUpdateDescription(image.id, descriptionValue); }}
+                onScroll={handleDescScroll}
+                placeholder="No description yet…"
+                rows={3}
+                className="w-full resize-none bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground/50"
+              />
+            </div>
           )}
         </div>
 
@@ -548,7 +691,7 @@ export function Lightbox({
                     navigator.clipboard.writeText(color);
                     toastManager.add({ title: `Copied ${color}`, type: "success", timeout: 1500 });
                   }}
-                  className="size-6 rounded-md ring-1 ring-black/20 transition-transform hover:scale-110"
+                  className="size-6 rounded-md ring-1 ring-black/20 transition-transform hover:scale-[1.06] active:scale-95"
                   style={{ backgroundColor: color }}
                   title={color}
                   aria-label={`Copy color ${color}`}
@@ -570,7 +713,7 @@ export function Lightbox({
                 {tag.name}
                 <button
                   type="button"
-                  onClick={() => removeTag(image.id, tag.id)}
+                  onClick={() => removeTag(displayImage.id, tag.id)}
                   className="text-muted-foreground hover:text-foreground transition-colors leading-none"
                   aria-label={`Remove tag ${tag.name}`}
                 >
@@ -615,7 +758,7 @@ export function Lightbox({
                 {col.name}
                 <button
                   type="button"
-                  onClick={() => removeFromCollection(col.id, image.id)}
+                  onClick={() => removeFromCollection(col.id, displayImage.id)}
                   className="text-muted-foreground hover:text-foreground transition-colors leading-none"
                   aria-label={`Remove from collection ${col.name}`}
                 >
@@ -629,7 +772,7 @@ export function Lightbox({
                 value=""
                 onChange={(e) => {
                   if (e.target.value) {
-                    addToCollection(e.target.value, image.id);
+                    addToCollection(e.target.value, displayImage.id);
                     e.target.value = "";
                   }
                 }}
@@ -654,7 +797,7 @@ export function Lightbox({
                     const trimmed = newColInput.trim();
                     if (trimmed) {
                       const col = await createCollection(trimmed);
-                      await addToCollection(col.id, image.id);
+                      await addToCollection(col.id, displayImage.id);
                     }
                     dispatch({ type: "setCreatingCol", value: false });
                   }
@@ -685,7 +828,7 @@ export function Lightbox({
             aria-label="Notes"
             value={notesValue}
             onChange={(e) => dispatch({ type: "setNotesValue", value: e.target.value })}
-            onBlur={() => onUpdateNotes(image.id, notesValue)}
+            onBlur={() => onUpdateNotes(displayImage.id, notesValue)}
             placeholder="Add a note…"
             rows={3}
             className="w-full resize-none bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground/50"
@@ -694,9 +837,9 @@ export function Lightbox({
 
         {/* Date + source */}
         <div className="border-b border-border/50 px-5 py-3 text-xs text-muted-foreground">
-          {(image.width > 0 || image.height > 0) && (
+          {(displayImage.width > 0 || displayImage.height > 0) && (
             <p className="mb-0.5">
-              {image.width} × {image.height} · {image.file_path.split(".").pop()?.toUpperCase()}
+              {displayImage.width} × {displayImage.height} · {displayImage.file_path.split(".").pop()?.toUpperCase()}
               {fileSize != null && ` · ${fileSize >= 1_048_576 ? `${(fileSize / 1_048_576).toFixed(1)} MB` : `${Math.round(fileSize / 1024)} KB`}`}
             </p>
           )}
@@ -704,7 +847,7 @@ export function Lightbox({
           <div className="mt-1 flex items-center gap-3">
             <button
               type="button"
-              onClick={() => revealItemInDir(image.file_path)}
+              onClick={() => revealItemInDir(displayImage.file_path)}
               className="inline-flex items-center gap-0.5 hover:text-foreground transition-colors"
             >
               <RiFolderOpenLine className="h-3 w-3" />
@@ -728,9 +871,9 @@ export function Lightbox({
                 Copy
               </button>
             )}
-            {image.source_url && (
+            {displayImage.source_url && (
               <a
-                href={image.source_url}
+                href={displayImage.source_url}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-0.5 hover:text-foreground transition-colors"
@@ -752,7 +895,7 @@ export function Lightbox({
             size="sm"
             className="w-full"
             onClick={() => {
-              onDelete(image);
+              onDelete(displayImage);
               onClose();
             }}
           >

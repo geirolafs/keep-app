@@ -132,9 +132,6 @@
   body {
     @apply bg-background text-foreground;
     }
-  button:not(:disabled), [role="button"]:not(:disabled) {
-    cursor: pointer;
-    }
   html {
     @apply font-sans;
     }
@@ -153,7 +150,6 @@
     #e6e6e6 100%
   );
   outline: none;
-  cursor: pointer;
 }
 .col-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -162,5 +158,59 @@
   border-radius: 8px;
   background: white;
   box-shadow: 1px 1px 4px rgba(0, 0, 0, 0.15);
-  cursor: pointer;
+}
+
+/* ── Collection fan hover ────────────────────────────────────────────── */
+/* data-hovering is set via JS mouseenter/mouseleave — fires once on boundary
+   cross, never on intra-card cursor movement, so translated images can't
+   cause the `:hover` re-evaluation flicker that CSS hover produces */
+.fan-wrapper {
+  transform: translate(0, 0);
+  transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.collection-card-zone[data-hovering] .fan-wrapper[data-i="0"] { transform: translate(-5px, -2px); }
+.collection-card-zone[data-hovering] .fan-wrapper[data-i="1"] { transform: translate(-2px, -7px); }
+.collection-card-zone[data-hovering] .fan-wrapper[data-i="2"] { transform: translate( 2px, -7px); }
+.collection-card-zone[data-hovering] .fan-wrapper[data-i="3"] { transform: translate( 5px, -2px); }
+@media (prefers-reduced-motion: reduce) {
+  .fan-wrapper { transition: none; }
+  .collection-card-zone[data-hovering] .fan-wrapper { transform: translate(0, 0); }
+}
+
+/* ── Lightbox enter / exit ───────────────────────────────────────────── */
+.lightbox-overlay {
+  opacity: 0;
+  transform: scale(0.98);
+  pointer-events: none;
+  transition: opacity 150ms cubic-bezier(0.23, 1, 0.32, 1), transform 150ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.lightbox-overlay[data-open] {
+  opacity: 1;
+  transform: scale(1);
+  pointer-events: auto;
+  transition: opacity 220ms cubic-bezier(0.23, 1, 0.32, 1), transform 220ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+@starting-style {
+  .lightbox-overlay[data-open] {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+/* Lightbox image crossfade on navigate */
+/* CSS animation not @starting-style+transition — WKWebView re-triggers
+   @starting-style on style recalculation (re-renders); animation only
+   fires on element insertion, which only happens when key changes. */
+@keyframes lightbox-image-fadein {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.lightbox-image {
+  animation: lightbox-image-fadein 100ms ease-out backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lightbox-overlay,
+  .lightbox-overlay[data-open] { transition: none; }
+  .lightbox-image { animation: none; }
 }
