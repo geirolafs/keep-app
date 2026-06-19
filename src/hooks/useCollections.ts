@@ -6,6 +6,7 @@ import type { Image } from "./use-images";
 export interface Collection {
   id: string;
   name: string;
+  sort_order: number;
 }
 
 async function getDb() {
@@ -21,35 +22,58 @@ function useCollectionsState() {
   const loadCollections = useCallback(async () => {
     const db = await getDb();
     const rows = await db.select<Collection[]>(
-      "SELECT * FROM collections ORDER BY id"
+      "SELECT * FROM collections ORDER BY sort_order ASC, id DESC"
     );
     setCollections(rows);
   }, []);
 
   const loadImageCollections = useCallback(async () => {
     const db = await getDb();
-    const rows = await db.select<{ image_id: string; id: string; name: string }[]>(
-      "SELECT ci.image_id, c.id, c.name FROM collection_images ci JOIN collections c ON ci.collection_id = c.id"
+    const rows = await db.select<{ image_id: string; id: string; name: string; sort_order: number }[]>(
+      "SELECT ci.image_id, c.id, c.name, c.sort_order FROM collection_images ci JOIN collections c ON ci.collection_id = c.id ORDER BY ci.rowid"
     );
     const map = new Map<string, Collection[]>();
     for (const row of rows) {
       const existing = map.get(row.image_id) ?? [];
-      existing.push({ id: row.id, name: row.name });
+      existing.push({ id: row.id, name: row.name, sort_order: row.sort_order });
       map.set(row.image_id, existing);
     }
     setImageCollectionsMap(map);
   }, []);
 
   const createCollection = useCallback(async (name: string) => {
-    const id = crypto.randomUUID();
     const db = await getDb();
-    await db.execute(
-      "INSERT INTO collections (id, name) VALUES ($1, $2)",
-      [id, name.trim()]
+    const minResult = await db.select<{ min_order: number | null }[]>(
+      "SELECT MIN(sort_order) as min_order FROM collections"
     );
-    const created: Collection = { id, name: name.trim() };
-    setCollections((prev) => [...prev, created]);
+    const newOrder = (minResult[0]?.min_order ?? 1) - 1;
+    const id = crypto.randomUUID();
+    await db.execute(
+      "INSERT INTO collections (id, name, sort_order) VALUES ($1, $2, $3)",
+      [id, name.trim(), newOrder]
+    );
+    const created: Collection = { id, name: name.trim(), sort_order: newOrder };
+    setCollections((prev) => [created, ...prev]);
     return created;
+  }, []);
+
+  const reorderCollections = useCallback(async (orderedIds: string[]) => {
+    const db = await getDb();
+    for (let i = 0; i < orderedIds.length; i++) {
+      await db.execute(
+        "UPDATE collections SET sort_order = $1 WHERE id = $2",
+        [i, orderedIds[i]]
+      );
+    }
+    setCollections((prev) => {
+      const map = new Map(prev.map((c) => [c.id, c]));
+      return orderedIds
+        .map((id, i) => {
+          const c = map.get(id);
+          return c ? { ...c, sort_order: i } : null;
+        })
+        .filter(Boolean) as Collection[];
+    });
   }, []);
 
   const deleteCollection = useCallback(async (id: string) => {
@@ -89,6 +113,10 @@ function useCollectionsState() {
       [collectionId, imageId]
     );
     await loadImageCollections();
+    setCollections((prev) => {
+      const col = prev.find((c) => c.id === collectionId);
+      return col ? [col, ...prev.filter((c) => c.id !== collectionId)] : prev;
+    });
   }, [loadImageCollections]);
 
   const removeFromCollection = useCallback(async (collectionId: string, imageId: string) => {
@@ -131,6 +159,7 @@ function useCollectionsState() {
     collections,
     imageCollectionsMap,
     createCollection,
+    reorderCollections,
     deleteCollection,
     renameCollection,
     addToCollection,

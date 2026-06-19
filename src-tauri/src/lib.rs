@@ -1282,6 +1282,12 @@ pub fn run() {
         kind: MigrationKind::Up,
         sql: "ALTER TABLE images ADD COLUMN thumb_hash TEXT;",
     },
+    Migration {
+        version: 9,
+        description: "add sort_order to collections",
+        kind: MigrationKind::Up,
+        sql: "ALTER TABLE collections ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;",
+    },
     ];
 
     tauri::Builder::default()

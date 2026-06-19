@@ -1,4 +1,4 @@
-import { ContextMenu } from "@base-ui/react/context-menu";
+import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from "@/components/ui/context-menu";
 import {
 	RiAlbumLine,
 	RiClipboardLine,
@@ -12,8 +12,25 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { toastManager } from "@/lib/toast";
-import type { Ref } from "react";
+import { toast } from "@/lib/toast";
+import {
+	DndContext,
+	closestCenter,
+	KeyboardSensor,
+	PointerSensor,
+	useSensor,
+	useSensors,
+} from "@dnd-kit/core";
+import type { DragEndEvent } from "@dnd-kit/core";
+import {
+	SortableContext,
+	sortableKeyboardCoordinates,
+	useSortable,
+	arrayMove,
+	rectSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import type { Ref, RefObject } from "react";
 import {
 	useCallback,
 	useEffect,
@@ -33,6 +50,153 @@ import { type PendingItem, useImages } from "@/hooks/use-images";
 import { useTags } from "@/hooks/use-tags";
 import { useCollections } from "@/hooks/useCollections";
 import { cn } from "@/lib/utils";
+
+const FAN_CONFIGS: Record<
+	number,
+	{ rotate: number; align: "center" | "start" | "end"; nudge?: string }[]
+> = {
+	1: [{ rotate: 0, align: "center" }],
+	2: [
+		{ rotate: -15, align: "center" },
+		{ rotate: 15, align: "center" },
+	],
+	3: [
+		{ rotate: -15, align: "center", nudge: "10%" },
+		{ rotate: 0, align: "center" },
+		{ rotate: 15, align: "center", nudge: "10%" },
+	],
+	4: [
+		{ rotate: -30, align: "center" },
+		{ rotate: -15, align: "start" },
+		{ rotate: 15, align: "start" },
+		{ rotate: 30, align: "center" },
+	],
+};
+
+interface SortableCollectionCardProps {
+	col: { id: string; name: string };
+	thumbs: string[];
+	fanSlots: { rotate: number; align: "center" | "start" | "end"; nudge?: string }[];
+	imageCount: number;
+	imgSrc: (path: string) => string;
+	isRenaming: boolean;
+	renameValue: string;
+	renameInputRef: RefObject<HTMLInputElement | null>;
+	onRenameChange: (v: string) => void;
+	onRenameKeyDown: (e: React.KeyboardEvent) => void;
+	onRenameBlur: () => void;
+	onStartRename: () => void;
+	onDelete: () => void;
+	onSelect: () => void;
+}
+
+function SortableCollectionCard({
+	col,
+	thumbs,
+	fanSlots,
+	imageCount,
+	imgSrc,
+	isRenaming,
+	renameValue,
+	renameInputRef,
+	onRenameChange,
+	onRenameKeyDown,
+	onRenameBlur,
+	onStartRename,
+	onDelete,
+	onSelect,
+}: SortableCollectionCardProps) {
+	const {
+		attributes,
+		listeners,
+		setNodeRef,
+		transform,
+		transition,
+		isDragging,
+	} = useSortable({ id: col.id });
+
+	const style = {
+		transform: CSS.Transform.toString(transform),
+		transition,
+		opacity: isDragging ? 0.4 : 1,
+		zIndex: isDragging ? 10 : undefined,
+		position: isDragging ? ("relative" as const) : undefined,
+	};
+
+	return (
+		<ContextMenu key={col.id}>
+			<div
+				ref={setNodeRef}
+				style={style}
+				className="collection-card-zone"
+				onMouseEnter={(e) => e.currentTarget.setAttribute("data-hovering", "")}
+				onMouseLeave={(e) => e.currentTarget.removeAttribute("data-hovering")}
+			>
+				<ContextMenuTrigger
+					className="relative block w-full aspect-square bg-card border border-border overflow-hidden outline-none"
+					onClick={onSelect}
+					onKeyDown={(e: React.KeyboardEvent) => e.key === "Enter" && onSelect()}
+					{...attributes}
+					{...listeners}
+				>
+					{/* fan of images */}
+					<div className="absolute inset-0 flex items-center justify-center overflow-hidden">
+						<div className="flex items-stretch justify-center w-full h-[55%]">
+							{fanSlots.map((slot, i) => (
+								<div
+									key={i}
+									style={slot.nudge ? { paddingTop: slot.nudge } : undefined}
+									className={`shrink-0 w-[40%] mr-[-26%] last:mr-0 flex flex-col drop-shadow-[0_6px_12px_rgba(0,0,0,0.3)] ${slot.align === "end" ? "justify-end" : slot.align === "center" ? "justify-center" : "justify-start"}`}
+								>
+									{thumbs[i] && (
+										<div className="fan-wrapper" data-i={i}>
+											<div
+												style={{ transform: `rotate(${slot.rotate}deg)` }}
+												className="w-[65%] mx-auto aspect-[3/4] overflow-hidden"
+											>
+												<img
+													src={imgSrc(thumbs[i])}
+													alt=""
+													draggable={false}
+													className="w-full h-full object-cover pointer-events-none"
+												/>
+											</div>
+										</div>
+									)}
+								</div>
+							))}
+						</div>
+					</div>
+					{/* name */}
+					{isRenaming ? (
+						<input
+							aria-label="Rename collection"
+							ref={renameInputRef}
+							value={renameValue}
+							onChange={(e) => onRenameChange(e.target.value)}
+							onKeyDown={onRenameKeyDown}
+							onBlur={onRenameBlur}
+							onClick={(e) => e.stopPropagation()}
+							className="absolute top-3 left-3 right-10 bg-transparent font-semibold text-sm outline-none border-b border-foreground/30 z-10"
+						/>
+					) : (
+						<span className="absolute top-3 left-3 text-sm font-semibold z-10 line-clamp-1 max-w-[70%] leading-tight">
+							{col.name}
+						</span>
+					)}
+					{/* count */}
+					<span className="absolute bottom-3 right-3 text-sm font-medium text-muted-foreground z-10">
+						{imageCount}
+					</span>
+				</ContextMenuTrigger>
+			</div>
+			<ContextMenuContent>
+				<ContextMenuItem onClick={onStartRename}>Rename…</ContextMenuItem>
+				<ContextMenuItem variant="destructive" onClick={onDelete}>Delete</ContextMenuItem>
+			</ContextMenuContent>
+		</ContextMenu>
+	);
+}
 
 const IMAGE_EXTENSIONS = new Set([
 	"png",
@@ -200,6 +364,7 @@ export default function Grid({
 		getCollectionThumbs,
 		deleteCollection,
 		renameCollection,
+		reorderCollections,
 		addToCollection,
 	} = useCollections();
 
@@ -519,9 +684,9 @@ export default function Grid({
 					.filter(Boolean) as string[];
 				await invoke("copy_files_to_clipboard", { filePaths });
 			}
-			toastManager.add({ title: `Copied ${ids.length} image${ids.length > 1 ? "s" : ""}`, type: "success" });
+			toast.success(`Copied ${ids.length} image${ids.length > 1 ? "s" : ""}`);
 		} catch {
-			toastManager.add({ title: "Copy failed", type: "error" });
+			toast.error("Copy failed");
 		}
 	}, [selectedIds, allImages]);
 
@@ -536,7 +701,7 @@ export default function Grid({
 			try {
 				await invoke("export_original", { filePath: img.file_path, destPath });
 			} catch {
-				toastManager.add({ title: "Export failed", type: "error" });
+				toast.error("Export failed");
 			}
 		} else {
 			const folder = await openDialog({ directory: true, title: "Export to folder" });
@@ -557,9 +722,9 @@ export default function Grid({
 				}),
 			);
 			if (failed > 0) {
-				toastManager.add({ title: `${failed} export(s) failed`, type: "error" });
+				toast.error(`${failed} export(s) failed`);
 			} else {
-				toastManager.add({ title: `Exported ${selected.length} files`, type: "success" });
+				toast.success(`Exported ${selected.length} files`);
 			}
 		}
 	};
@@ -569,6 +734,21 @@ export default function Grid({
 		openFilePicker: handleFilePicker,
 		scrollToTop: () => activeScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" }),
 	}));
+
+	const collectionDndSensors = useSensors(
+		useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+		useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+	);
+
+	const handleCollectionDragEnd = useCallback((event: DragEndEvent) => {
+		const { active, over } = event;
+		if (!over || active.id === over.id) return;
+		const oldIndex = collections.findIndex((c) => c.id === active.id);
+		const newIndex = collections.findIndex((c) => c.id === over.id);
+		if (oldIndex === -1 || newIndex === -1) return;
+		const newOrder = arrayMove(collections, oldIndex, newIndex).map((c) => c.id);
+		reorderCollections(newOrder);
+	}, [collections, reorderCollections]);
 
 	const handleRenameCollection = (id: string, currentName: string) => {
 		dispatch({ type: "startRename", kind: "collection", id, currentName });
@@ -624,38 +804,6 @@ export default function Grid({
 		return () => window.removeEventListener("keydown", handler);
 	}, [selectedIds.size, openId, handleBatchDelete, handleBatchCopy]);
 
-	const contextMenuPopupClass =
-		"z-50 min-w-[140px] rounded-lg border border-border bg-popover p-1 shadow-lg text-sm text-popover-foreground " +
-		"origin-[var(--transform-origin)] transition-[opacity,transform] duration-[150ms] ease-[cubic-bezier(0.23,1,0.32,1)] " +
-		"data-[ending-style]:duration-[100ms] " +
-		"data-[starting-style]:opacity-0 data-[starting-style]:scale-95 " +
-		"data-[ending-style]:opacity-0 data-[ending-style]:scale-95";
-	const contextMenuItemClass =
-		"flex items-center px-3 py-1.5 rounded-md hover:bg-accent hover:text-accent-foreground outline-none select-none";
-	const contextMenuItemDestructiveClass =
-		"flex items-center px-3 py-1.5 rounded-md text-destructive hover:bg-destructive/10 outline-none select-none";
-
-	const FAN_CONFIGS: Record<
-		number,
-		{ rotate: number; align: "center" | "start" | "end"; nudge?: string }[]
-	> = {
-		1: [{ rotate: 0, align: "center" }],
-		2: [
-			{ rotate: -15, align: "center" },
-			{ rotate: 15, align: "center" },
-		],
-		3: [
-			{ rotate: -15, align: "center", nudge: "10%" },
-			{ rotate: 0, align: "center" },
-			{ rotate: 15, align: "center", nudge: "10%" },
-		],
-		4: [
-			{ rotate: -30, align: "center" },
-			{ rotate: -15, align: "start" },
-			{ rotate: 15, align: "start" },
-			{ rotate: 30, align: "center" },
-		],
-	};
 
 	// Collection grid view
 	const renderCollectionGrid = () => (
@@ -678,127 +826,45 @@ export default function Grid({
 					</button>
 				</div>
 			) : (
-				<div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-					{collections.map((col) => {
-						const ids = getCollectionImageIds(col.id);
-						const slotCount = Math.min(ids.size, 4);
-						const activeSlots = FAN_CONFIGS[slotCount] ?? [];
-						const thumbs = getCollectionThumbs(col.id, allImages, slotCount);
-						return (
-							<ContextMenu.Root key={col.id}>
-								<div
-									className="collection-card-zone"
-									onMouseEnter={(e) =>
-										e.currentTarget.setAttribute("data-hovering", "")
-									}
-									onMouseLeave={(e) =>
-										e.currentTarget.removeAttribute("data-hovering")
-									}
-								>
-									<ContextMenu.Trigger
-										className="relative block w-full aspect-square bg-card border border-border overflow-hidden outline-none"
-										onClick={() => onSelectId?.(col.id)}
-										tabIndex={0}
-										onKeyDown={(e) => e.key === "Enter" && onSelectId?.(col.id)}
-									>
-										{/* fan of images */}
-										<div className="absolute inset-0 flex items-center justify-center overflow-hidden">
-											<div className="flex items-stretch justify-center w-full h-[55%]">
-												{activeSlots.map((slot, i) => (
-													<div
-														key={i}
-														style={
-															slot.nudge
-																? { paddingTop: slot.nudge }
-																: undefined
-														}
-														className={`shrink-0 w-[40%] mr-[-26%] last:mr-0 flex flex-col drop-shadow-[0_6px_12px_rgba(0,0,0,0.3)] ${slot.align === "end" ? "justify-end" : slot.align === "center" ? "justify-center" : "justify-start"}`}
-													>
-														{thumbs[i] && (
-															<div className="fan-wrapper" data-i={i}>
-																<div
-																	style={{
-																		transform: `rotate(${slot.rotate}deg)`,
-																	}}
-																	className="w-[65%] mx-auto aspect-[3/4] overflow-hidden"
-																>
-																	<img
-																		src={imgSrc(thumbs[i])}
-																		alt=""
-																		draggable={false}
-																		className="w-full h-full object-cover pointer-events-none"
-																	/>
-																</div>
-															</div>
-														)}
-													</div>
-												))}
-											</div>
-										</div>
-										{/* name */}
-										{renaming?.type === "collection" &&
-										renaming.id === col.id ? (
-											<input
-												aria-label="Rename collection"
-												ref={renameInputRef}
-												value={renameValue}
-												onChange={(e) =>
-													dispatch({
-														type: "setRenameValue",
-														value: e.target.value,
-													})
-												}
-												onKeyDown={(e) => {
-													if (e.key === "Enter") commitRename();
-													if (e.key === "Escape")
-														dispatch({ type: "cancelRename" });
-												}}
-												onBlur={commitRename}
-												onClick={(e) => e.stopPropagation()}
-												className="absolute top-3 left-3 right-10 bg-transparent font-semibold text-sm outline-none border-b border-foreground/30 z-10"
-											/>
-										) : (
-											<span className="absolute top-3 left-3 text-sm font-semibold z-10 line-clamp-1 max-w-[70%] leading-tight">
-												{col.name}
-											</span>
-										)}
-										{/* count */}
-										<span className="absolute bottom-3 right-3 text-sm font-medium text-muted-foreground z-10">
-											{ids.size}
-										</span>
-									</ContextMenu.Trigger>
-								</div>
-								<ContextMenu.Portal>
-									<ContextMenu.Positioner>
-										<ContextMenu.Popup className={contextMenuPopupClass}>
-											<ContextMenu.Item
-												className={contextMenuItemClass}
-												onClick={() => handleRenameCollection(col.id, col.name)}
-											>
-												Rename…
-											</ContextMenu.Item>
-											<ContextMenu.Item
-												className={contextMenuItemDestructiveClass}
-												onClick={() =>
-													dispatch({
-														type: "setConfirmDelete",
-														state: {
-															type: "collection",
-															id: col.id,
-															name: col.name,
-														},
-													})
-												}
-											>
-												Delete
-											</ContextMenu.Item>
-										</ContextMenu.Popup>
-									</ContextMenu.Positioner>
-								</ContextMenu.Portal>
-							</ContextMenu.Root>
-						);
-					})}
-				</div>
+				<DndContext
+					sensors={collectionDndSensors}
+					collisionDetection={closestCenter}
+					onDragEnd={handleCollectionDragEnd}
+				>
+					<SortableContext items={collections.map((c) => c.id)} strategy={rectSortingStrategy}>
+						<div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+							{collections.map((col) => {
+								const ids = getCollectionImageIds(col.id);
+								const slotCount = Math.min(ids.size, 4);
+								const fanSlots = FAN_CONFIGS[slotCount] ?? [];
+								const thumbs = getCollectionThumbs(col.id, allImages, slotCount);
+								const isRenaming = renaming?.type === "collection" && renaming.id === col.id;
+								return (
+									<SortableCollectionCard
+										key={col.id}
+										col={col}
+										thumbs={thumbs}
+										fanSlots={fanSlots}
+										imageCount={ids.size}
+										imgSrc={imgSrc}
+										isRenaming={!!isRenaming}
+										renameValue={renameValue}
+										renameInputRef={renameInputRef}
+										onRenameChange={(v) => dispatch({ type: "setRenameValue", value: v })}
+										onRenameKeyDown={(e) => {
+											if (e.key === "Enter") commitRename();
+											if (e.key === "Escape") dispatch({ type: "cancelRename" });
+										}}
+										onRenameBlur={commitRename}
+										onStartRename={() => handleRenameCollection(col.id, col.name)}
+										onDelete={() => dispatch({ type: "setConfirmDelete", state: { type: "collection", id: col.id, name: col.name } })}
+										onSelect={() => onSelectId?.(col.id)}
+									/>
+								);
+							})}
+						</div>
+					</SortableContext>
+				</DndContext>
 			)}
 		</div>
 	);
@@ -852,8 +918,8 @@ export default function Grid({
 									? 0.12 + (sharedCount / maxCoCount) * 0.88
 									: 0.12;
 							return (
-							<ContextMenu.Root key={id}>
-								<ContextMenu.Trigger className="contents">
+							<ContextMenu key={id}>
+								<ContextMenuTrigger className="contents">
 									{renaming?.type === "tag" && renaming.id === id ? (
 										<input
 											aria-label="Rename tag"
@@ -899,31 +965,24 @@ export default function Grid({
 											<span className="ml-2 text-muted-foreground text-xs">{count}</span>
 										</button>
 									)}
-								</ContextMenu.Trigger>
-								<ContextMenu.Portal>
-									<ContextMenu.Positioner>
-										<ContextMenu.Popup className={contextMenuPopupClass}>
-											<ContextMenu.Item
-												className={contextMenuItemClass}
-												onClick={() => handleRenameTag(id, name)}
-											>
-												Rename…
-											</ContextMenu.Item>
-											<ContextMenu.Item
-												className={contextMenuItemDestructiveClass}
-												onClick={() =>
-													dispatch({
-														type: "setConfirmDelete",
-														state: { type: "tag", id, name },
-													})
-												}
-											>
-												Delete
-											</ContextMenu.Item>
-										</ContextMenu.Popup>
-									</ContextMenu.Positioner>
-								</ContextMenu.Portal>
-							</ContextMenu.Root>
+								</ContextMenuTrigger>
+								<ContextMenuContent>
+									<ContextMenuItem onClick={() => handleRenameTag(id, name)}>
+										Rename…
+									</ContextMenuItem>
+									<ContextMenuItem
+										variant="destructive"
+										onClick={() =>
+											dispatch({
+												type: "setConfirmDelete",
+												state: { type: "tag", id, name },
+											})
+										}
+									>
+										Delete
+									</ContextMenuItem>
+								</ContextMenuContent>
+							</ContextMenu>
 						);
 						})}
 					</div>
