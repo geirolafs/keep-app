@@ -12,6 +12,9 @@ export function ToastList() {
           toast={toast}
           className={cn(
             "flex items-start justify-between gap-3 rounded-lg border px-4 py-3 text-sm shadow-lg backdrop-blur-sm",
+            "transition-[opacity,transform] duration-[250ms] ease-[cubic-bezier(0.23,1,0.32,1)]",
+            "data-[starting-style]:opacity-0 motion-safe:data-[starting-style]:translate-y-2",
+            "data-[ending-style]:opacity-0 motion-safe:data-[ending-style]:translate-y-2",
             toast.type === "success" &&
               "border-green-600/30 bg-green-950/90 text-green-50",
             toast.type === "error" &&
