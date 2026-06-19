@@ -1,7 +1,7 @@
 use base64::Engine as _;
 use color_thief::{get_palette, ColorFormat};
 use image::imageops::FilterType;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_sql::{Builder as SqlBuilder, Migration, MigrationKind};
 
 fn save_thumb(img: &image::DynamicImage, path: &std::path::Path) -> Result<(), String> {
@@ -543,8 +543,96 @@ async fn load_example_snapshot(
     })
 }
 
+#[derive(serde::Serialize)]
+struct LocalModelStatus { present: bool }
+
 #[tauri::command]
-async fn analyze_image(thumb_path: String, api_key: String, model: String) -> Result<AnalysisResult, String> {
+async fn get_local_model_status(app: tauri::AppHandle) -> Result<LocalModelStatus, String> {
+    let models_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("models");
+    let text_model = models_dir.join("Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf");
+    let mmproj = models_dir.join("mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf");
+    Ok(LocalModelStatus { present: text_model.exists() && mmproj.exists() })
+}
+
+#[tauri::command]
+async fn download_model_file(
+    url: String,
+    filename: String,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    let models_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("models");
+    std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
+
+    let tmp_path = models_dir.join(format!("{}.tmp", filename));
+    let final_path = models_dir.join(&filename);
+
+    let client = reqwest::Client::new();
+    let mut resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let total_bytes = resp.content_length().unwrap_or(0);
+
+    let mut file = std::fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
+    let mut downloaded_bytes: u64 = 0;
+
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        use std::io::Write;
+        file.write_all(&chunk).map_err(|e| e.to_string())?;
+        downloaded_bytes += chunk.len() as u64;
+        let _ = window.emit("local-model-progress", serde_json::json!({
+            "filename": filename,
+            "downloaded_bytes": downloaded_bytes,
+            "total_bytes": total_bytes,
+        }));
+    }
+
+    std::fs::rename(&tmp_path, &final_path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn analyze_local(thumb_path: &str, app: &tauri::AppHandle) -> Result<AnalysisResult, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let dir = exe.parent().ok_or("no exe parent")?;
+    let arch = std::env::consts::ARCH;
+    let binary_name = format!("llama-mtmd-cli-{}-apple-darwin", arch);
+    let binary = dir.join(&binary_name);
+
+    let models_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("models");
+    let text_model = models_dir.join("Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf");
+    let mmproj = models_dir.join("mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf");
+
+    let schema = r#"{"type":"object","properties":{"title":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}},"description":{"type":"string"}},"required":["title","tags","description"]}"#;
+
+    let output = std::process::Command::new(&binary)
+        .args([
+            "-m", text_model.to_str().unwrap_or(""),
+            "--mmproj", mmproj.to_str().unwrap_or(""),
+            "--image", thumb_path,
+            "-p", "Analyze this image. Provide: a short descriptive title (max 8 words), 3-5 single-word or short-phrase tags, and a 1-2 sentence description.",
+            "--json-schema", schema,
+            "-n", "512",
+            "--no-display-prompt",
+            "-ngl", "99",
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    let stdout = std::str::from_utf8(&output.stdout).map_err(|e| e.to_string())?;
+    let json_str = stdout.rfind('{').map(|i| &stdout[i..]).unwrap_or(stdout.trim());
+
+    serde_json::from_str::<AnalysisResult>(json_str)
+        .map_err(|e| format!("Failed to parse local AI response: {} — raw: {}", e, json_str))
+}
+
+#[tauri::command]
+async fn analyze_image(thumb_path: String, api_key: String, model: String, app: tauri::AppHandle) -> Result<AnalysisResult, String> {
+    if api_key.is_empty() {
+        let local_status = get_local_model_status(app.clone()).await?;
+        if local_status.present {
+            return analyze_local(&thumb_path, &app).await;
+        }
+        return Err("No AI configured. Add an API key or download KEEP AI in Settings.".to_string());
+    }
+
     let ext = std::path::Path::new(&thumb_path)
         .extension()
         .and_then(|s| s.to_str())
@@ -702,6 +790,26 @@ fn export_original(file_path: String, dest_path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn copy_image_bytes_to_clipboard(png_base64: String) -> Result<(), String> {
+    use base64::Engine;
+    let png_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&png_base64)
+        .map_err(|e| e.to_string())?;
+    let img = image::load_from_memory(&png_bytes).map_err(|e| e.to_string())?;
+    let rgba = img.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    let pixels = rgba.into_raw();
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard
+        .set_image(arboard::ImageData {
+            width: width as usize,
+            height: height as usize,
+            bytes: std::borrow::Cow::from(pixels),
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn copy_image_to_clipboard(file_path: String) -> Result<(), String> {
     let path = std::path::Path::new(&file_path);
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
@@ -794,7 +902,11 @@ fn parse_og_tags(html: &str) -> OgMeta {
         .or_else(|| get_og("og:video:url"))
         .or_else(|| get_og("og:video"))
         .filter(|v| v.ends_with(".mp4") || v.contains("video.twimg.com"));
-    OgMeta { title, description, image: get_og("og:image"), video, site_name: get_og("og:site_name") }
+    // Prefer secure_url > url for image; skip data: URLs (can't be fetched)
+    let image = get_og("og:image:secure_url")
+        .or_else(|| get_og("og:image"))
+        .filter(|u| !u.starts_with("data:"));
+    OgMeta { title, description, image, video, site_name: get_og("og:site_name") }
 }
 
 fn strip_html_tags(html: &str) -> String {
@@ -821,6 +933,7 @@ async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, Stri
 
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+        .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -841,30 +954,45 @@ async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, Stri
         .and_then(|s| s.split('/').next())
         .unwrap_or("").to_string();
 
+    // Strip /photo/N or /video/N suffix — oEmbed and CDN Referer don't accept these variants
+    let base_url = {
+        let mut u = url.clone();
+        for prefix in &["/photo/", "/video/"] {
+            if let Some(idx) = u.find(prefix) {
+                u.truncate(idx);
+                break;
+            }
+        }
+        u
+    };
+
     // Fetch metadata
     let (title, description, site_name, image_url, video_url, author_name) = if is_tweet {
-        // Fetch oEmbed for author + caption
-        let oembed_url = format!("https://publish.twitter.com/oembed?url={}&maxwidth=550&dnt=true", url);
+        // Fetch oEmbed for author + caption (use base_url — oEmbed rejects /photo/N variants)
+        let oembed_url = format!("https://publish.twitter.com/oembed?url={}&maxwidth=550&dnt=true", base_url);
         let (author, caption, oembed_thumb) = match client.get(&oembed_url).send().await {
             Ok(resp) => {
                 let oembed: serde_json::Value = resp.json().await.unwrap_or_default();
                 let author = oembed["author_name"].as_str().map(str::to_string);
                 let html_text = oembed["html"].as_str().unwrap_or("");
                 let caption = strip_html_tags(html_text);
-                let thumb = oembed["thumbnail_url"].as_str().map(str::to_string);
+                // Upgrade pbs.twimg.com thumbnails from :thumb (150px) to :large
+                let thumb = oembed["thumbnail_url"].as_str()
+                    .filter(|u| !u.contains("/profile_images/"))
+                    .map(|u| u.replace("name=thumb", "name=large").replace(":thumb", ":large"));
                 (author, caption, thumb)
             }
             Err(_) => (None, String::new(), None),
         };
         // Try yt-dlp first for a direct MP4 URL (handles video tweets Twitter hides from og:video)
-        let yt_video_url = yt_dlp_get_url(&url);
+        let yt_video_url = yt_dlp_get_url(&base_url);
 
-        // Fetch tweet page og:image (actual image for image tweets; profile pic for video/text tweets)
+        // Fetch tweet page og:image using base URL (pbs.twimg.com rejects /photo/N Referer)
         let tweet_og_image = async {
-            let resp = client.get(&url).header("Accept-Language", "en-US,en;q=0.9").send().await.ok()?;
+            let resp = client.get(&base_url).header("Accept-Language", "en-US,en;q=0.9").send().await.ok()?;
             let body = resp.text().await.ok()?;
             let og = parse_og_tags(&body);
-            og.image.map(|u| resolve_url(&u, &url))
+            og.image.map(|u| resolve_url(&u, &base_url))
         }.await;
         // Only use og:image if it's not a profile pic (profile pics contain /profile_images/)
         let usable_og_image = tweet_og_image.filter(|u| !u.contains("/profile_images/"));
@@ -880,6 +1008,53 @@ async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, Stri
     } else {
         match client.get(&url).send().await {
             Ok(resp) => {
+                // If the URL itself responds with an image content-type, use it directly
+                let ct = resp.headers().get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_lowercase();
+                if ct.starts_with("image/") {
+                    // Treat as a direct image URL — feed back through image_url
+                    let body = resp.bytes().await.unwrap_or_default().to_vec();
+                    if let Ok(img) = image::load_from_memory(&body) {
+                        let (w, h) = (img.width(), img.height());
+                        let ext = ct.split('/').nth(1).unwrap_or("jpg")
+                            .split(';').next().unwrap_or("jpg")
+                            .trim().to_string();
+                        let ext = if ext == "jpeg" { "jpg".to_string() } else { ext };
+                        let file_path = images_dir.join(format!("{}.{}", id, ext));
+                        let thumb_path = thumbs_dir.join(format!("{}.jpg", id));
+                        if std::fs::write(&file_path, &body).is_ok() && save_thumb(&img, &thumb_path).is_ok() {
+                            let rgb = img.to_rgb8();
+                            let colors = get_palette(rgb.as_raw(), ColorFormat::Rgb, 10, 5).ok();
+                            let (dom, pal) = if let Some(ref cols) = colors {
+                                let hexes: Vec<String> = cols.iter().map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)).collect();
+                                (hexes.first().cloned(), serde_json::to_string(&hexes).ok())
+                            } else { (None, None) };
+                            // Return early — treat this as a plain image save, not a link card
+                            return Ok(SavedLink {
+                                id,
+                                file_path: file_path.to_string_lossy().to_string(),
+                                thumb_path: thumb_path.to_string_lossy().to_string(),
+                                width: w,
+                                height: h,
+                                dominant_color: dom,
+                                palette: pal,
+                                created_at: now,
+                                post_meta: serde_json::json!({
+                                    "platform": "web",
+                                    "url": url,
+                                    "title": null,
+                                    "description": null,
+                                    "siteName": domain,
+                                    "imageUrl": url,
+                                    "authorName": null,
+                                }).to_string(),
+                            });
+                        }
+                    }
+                    return Err("Failed to decode image from URL.".to_string());
+                }
                 let body = resp.text().await.unwrap_or_default();
                 let og = parse_og_tags(&body);
                 let resolved_img = og.image.map(|u| resolve_url(&u, &url));
@@ -890,14 +1065,14 @@ async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, Stri
         }
     };
 
-    // Helper: download bytes with browser-like headers
+    // Helper: download bytes with browser-like headers (base_url as Referer — CDN rejects /photo/N)
     let fetch_bytes = |dl_url: &str| {
         let c = client.clone();
-        let u = url.clone();
+        let referer = base_url.clone();
         let du = dl_url.to_string();
         async move {
             let resp = c.get(&du)
-                .header("Referer", &u)
+                .header("Referer", &referer)
                 .header("Accept", "image/webp,image/apng,image/*,video/mp4,*/*;q=0.8")
                 .send().await.ok()?;
             let resp = resp.error_for_status().ok()?;
@@ -940,9 +1115,17 @@ async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, Stri
             if let Some(bytes) = fetch_bytes(img_url).await {
                 if let Ok(img) = image::load_from_memory(&bytes) {
                     let (w, h) = (img.width(), img.height());
-                    let ext = std::path::Path::new(img_url.split('?').next().unwrap_or(img_url))
+                    // Try path extension first; fall back to format= query param; then jpg
+                    let path_ext = std::path::Path::new(img_url.split('?').next().unwrap_or(img_url))
                         .extension().and_then(|s| s.to_str()).filter(|s| !s.is_empty())
-                        .unwrap_or("jpg").to_lowercase();
+                        .map(|s| s.to_lowercase());
+                    let query_fmt = img_url.split('?').nth(1).and_then(|q| {
+                        q.split('&').find_map(|p| {
+                            let (k, v) = p.split_once('=')?;
+                            if k == "format" { Some(v.to_lowercase()) } else { None }
+                        })
+                    });
+                    let ext = path_ext.or(query_fmt).unwrap_or_else(|| "jpg".to_string());
                     let file_path = images_dir.join(format!("{}.{}", id, ext));
                     if std::fs::write(&file_path, &bytes).is_ok() {
                         let thumb_path = thumbs_dir.join(format!("{}.jpg", id));
@@ -960,11 +1143,8 @@ async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, Stri
             }
         }
 
-        // ── No usable media — 1×1 placeholder ──────────────────────────────────
-        let ph = images_dir.join(format!("{}.png", id));
-        image::DynamicImage::new_rgb8(1, 1).save(&ph).ok();
-        let s = ph.to_string_lossy().to_string();
-        (s.clone(), s, 0, 0, None, None)
+        // ── No usable media — bail out rather than save an invisible placeholder ─
+        return Err("No image found for this URL. Try pasting a direct image URL instead.".to_string());
     };
 
     let post_meta = serde_json::json!({
@@ -1113,6 +1293,16 @@ pub fn run() {
         )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .setup(|app| {
+            use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+            app.global_shortcut().on_shortcut("CommandOrControl+,", |app, _shortcut, event| {
+                if event.state() == ShortcutState::Pressed {
+                    let _ = app.emit("open-settings", ());
+                }
+            })?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             save_image_bytes,
             save_image_from_path,
@@ -1122,10 +1312,13 @@ pub fn run() {
             refresh_thumbnails,
             save_example_snapshot,
             load_example_snapshot,
+            get_local_model_status,
+            download_model_file,
             analyze_image,
             analyze_vision_item,
             generate_prompt,
             export_original,
+            copy_image_bytes_to_clipboard,
             copy_image_to_clipboard,
             copy_files_to_clipboard,
             trash_files,

@@ -21,7 +21,7 @@ function useCollectionsState() {
   const loadCollections = useCallback(async () => {
     const db = await getDb();
     const rows = await db.select<Collection[]>(
-      "SELECT * FROM collections ORDER BY name"
+      "SELECT * FROM collections ORDER BY id"
     );
     setCollections(rows);
   }, []);
@@ -48,9 +48,7 @@ function useCollectionsState() {
       [id, name.trim()]
     );
     const created: Collection = { id, name: name.trim() };
-    setCollections((prev) =>
-      [...prev, created].sort((a, b) => a.name.localeCompare(b.name))
-    );
+    setCollections((prev) => [...prev, created]);
     return created;
   }, []);
 
@@ -74,11 +72,7 @@ function useCollectionsState() {
     if (!trimmed) return;
     const db = await getDb();
     await db.execute("UPDATE collections SET name = $1 WHERE id = $2", [trimmed, id]);
-    setCollections((prev) =>
-      prev
-        .map((c) => (c.id === id ? { ...c, name: trimmed } : c))
-        .sort((a, b) => a.name.localeCompare(b.name))
-    );
+    setCollections((prev) => prev.map((c) => (c.id === id ? { ...c, name: trimmed } : c)));
     setImageCollectionsMap((prev) => {
       const next = new Map(prev);
       for (const [imgId, cols] of next.entries()) {

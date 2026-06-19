@@ -163,6 +163,7 @@ interface GridProps {
 	onAutoNumCols?: (n: number) => void;
 	onScrolledChange?: (scrolled: boolean) => void;
 	navHeight?: number;
+	onOpenSettings?: () => void;
 	ref?: Ref<GridHandle>;
 }
 
@@ -179,6 +180,7 @@ export default function Grid({
 	onAutoNumCols,
 	onScrolledChange,
 	navHeight = 0,
+	onOpenSettings,
 	ref,
 }: GridProps) {
 	const {
@@ -289,15 +291,23 @@ export default function Grid({
 		};
 	}, [masonryEl]);
 	const shuffleOrderRef = useRef<Map<string, number> | null>(null);
+	const prevShuffleSeedRef = useRef<number>(0);
 	useEffect(() => {
 		if (shuffleSeed > 0) {
+			// Full re-shuffle when seed changes; preserve positions for new-image additions.
+			const seedChanged = shuffleSeed !== prevShuffleSeedRef.current;
+			prevShuffleSeedRef.current = shuffleSeed;
+			const existing = seedChanged ? new Map<string, number>() : (shuffleOrderRef.current ?? new Map<string, number>());
 			const map = new Map<string, number>();
-			allImages.forEach((img) => map.set(img.id, Math.random()));
+			for (const img of allImages) {
+				map.set(img.id, existing.get(img.id) ?? Math.random());
+			}
 			shuffleOrderRef.current = map;
 		} else {
+			prevShuffleSeedRef.current = 0;
 			shuffleOrderRef.current = null;
 		}
-	}, [shuffleSeed, allImages.forEach]); // eslint-disable-line react-hooks/exhaustive-deps
+	}, [shuffleSeed, allImages]); // eslint-disable-line react-hooks/exhaustive-deps
 
 	// Compute filtered + sorted images
 	const filteredImages = (() => {
@@ -336,14 +346,14 @@ export default function Grid({
 					const na = (a.title ?? a.file_path ?? "").toLowerCase();
 					const nb = (b.title ?? b.file_path ?? "").toLowerCase();
 					return sort === "name-az"
-						? na.localeCompare(nb)
-						: nb.localeCompare(na);
+						? na.localeCompare(nb) || a.id.localeCompare(b.id)
+						: nb.localeCompare(na) || b.id.localeCompare(a.id);
 				});
 			} else {
 				imgs.sort((a, b) =>
 					sort === "newest"
-						? (b.created_at ?? 0) - (a.created_at ?? 0)
-						: (a.created_at ?? 0) - (b.created_at ?? 0),
+						? (b.created_at ?? 0) - (a.created_at ?? 0) || b.id.localeCompare(a.id)
+						: (a.created_at ?? 0) - (b.created_at ?? 0) || a.id.localeCompare(b.id),
 				);
 			}
 		}
@@ -1008,7 +1018,7 @@ export default function Grid({
 					key={img.id}
 					aria-label={img.title ?? "Image"}
 					className={cn(
-						"group overflow-hidden relative outline-none w-full text-left transition-transform duration-[150ms] ease-out active:scale-[0.98]",
+						"group overflow-hidden relative outline-none w-full text-left transition-transform duration-[150ms] ease-out active:scale-[0.98] cursor-default select-none",
 						selectedIds.has(img.id) &&
 							"ring-2 ring-primary ring-offset-2 ring-offset-background",
 					)}
@@ -1300,6 +1310,7 @@ export default function Grid({
 				onUpdateNotes={updateNotes}
 				onUpdateDescription={updateDescription}
 				imgSrc={imgSrc}
+				onOpenSettings={onOpenSettings}
 			/>
 
 			<ConfirmDialog

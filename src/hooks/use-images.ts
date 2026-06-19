@@ -115,7 +115,7 @@ export async function devResetAll() {
 export async function devSaveExample(n: number) {
   try {
     const db = await getDb();
-    const imgs = await db.select<(Image & { updated_at: number })[]>("SELECT * FROM images WHERE deleted_at IS NULL");
+    const imgs = await db.select<(Image & { updated_at: number })[]>("SELECT * FROM images WHERE deleted_at IS NULL ORDER BY created_at DESC, id DESC");
     const tags = await db.select<{ id: string; name: string }[]>("SELECT * FROM tags");
     const imageTags = await db.select<{ image_id: string; tag_id: string }[]>("SELECT * FROM image_tags");
     const collections = await db.select<{ id: string; name: string }[]>("SELECT * FROM collections");
@@ -226,7 +226,7 @@ function useImagesState() {
     }
 
     const rows = await db.select<Image[]>(
-      "SELECT * FROM images WHERE deleted_at IS NULL ORDER BY created_at DESC"
+      "SELECT * FROM images WHERE deleted_at IS NULL ORDER BY created_at DESC, id DESC"
     );
     setImages(rows);
 
@@ -376,7 +376,8 @@ function useImagesState() {
       ]);
     } catch (err) {
       console.error("[keep] saveLink failed:", err);
-      toastManager.add({ title: "Failed to save link", type: "error" });
+      const msg = typeof err === "string" ? err : "Failed to save link";
+      toastManager.add({ title: msg, type: "error" });
     } finally {
       removePending(tempId);
     }
@@ -517,7 +518,7 @@ function useImagesState() {
   const saveExample = useCallback(async (n: number) => {
     try {
       const db = await getDb();
-      const imgs = await db.select<(Image & { updated_at: number })[]>("SELECT * FROM images WHERE deleted_at IS NULL");
+      const imgs = await db.select<(Image & { updated_at: number })[]>("SELECT * FROM images WHERE deleted_at IS NULL ORDER BY created_at DESC, id DESC");
       const tags = await db.select<{ id: string; name: string }[]>("SELECT * FROM tags");
       const imageTags = await db.select<{ image_id: string; tag_id: string }[]>("SELECT * FROM image_tags");
       const collections = await db.select<{ id: string; name: string }[]>("SELECT * FROM collections");

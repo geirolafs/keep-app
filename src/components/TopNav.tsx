@@ -1,6 +1,7 @@
 import { AlertDialog } from "@base-ui/react/alert-dialog";
 import {
 	RiAddLine,
+	RiCheckLine,
 	RiEyeLine,
 	RiEyeOffLine,
 	RiLoader4Line,
@@ -12,6 +13,7 @@ import {
 	RiSparkling2Line,
 } from "@remixicon/react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { sendNotification } from "@tauri-apps/plugin-notification";
 import {
 	type Ref,
@@ -46,6 +48,7 @@ export type Sort = "newest" | "oldest" | "name-az" | "name-za";
 export interface TopNavHandle {
 	startNaming: () => void;
 	openHelp: () => void;
+	openSettings: () => void;
 }
 
 interface TopNavProps {
@@ -149,7 +152,12 @@ const TABS: { id: Tab; label: string }[] = [
 const SHORTCUTS: [string, string][] = [
 	["⌘K", "Search palette"],
 	["⌘F", "Focus search bar"],
+	["⌘,", "Settings"],
 	["← →", "Navigate lightbox"],
+	["⌫", "Delete (lightbox)"],
+	["e", "Edit title (lightbox)"],
+	["a", "Analyze (lightbox)"],
+	["⌘C", "Copy to clipboard (lightbox)"],
 	["Scroll", "Zoom in / out"],
 	["+ / -", "Zoom in / out (step)"],
 	["0", "Reset zoom"],
@@ -180,10 +188,22 @@ function TopNav({
 	scrolled = false,
 	ref,
 }: TopNavProps) {
+	const TEXT_MODEL_URL =
+		"https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf";
+	const MMPROJ_URL =
+		"https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf";
+
 	const [logoHovered, setLogoHovered] = useState(false);
 	const [naming, setNaming] = useState(false);
 	const [nameValue, setNameValue] = useState("");
 	const [helpOpen, setHelpOpen] = useState(false);
+	const [localModelPresent, setLocalModelPresent] = useState(false);
+	const [isDownloading, setIsDownloading] = useState(false);
+	const [downloadProgress, setDownloadProgress] = useState<{
+		filename: string;
+		pct: number;
+	} | null>(null);
+	const downloadCancelRef = useRef(false);
 	const nameInputRef = useRef<HTMLInputElement>(null);
 	const analyzeCancelRef = useRef(false);
 	const visionCancelRef = useRef(false);
@@ -212,11 +232,34 @@ function TopNav({
 			onTabChange("all");
 		}
 	}, [binImages.length, activeTab, onTabChange]);
+
+	useEffect(() => {
+		invoke<{ present: boolean }>("get_local_model_status")
+			.then((s) => setLocalModelPresent(s.present))
+			.catch(() => {});
+	}, []);
+
+	useEffect(() => {
+		const unlisten = listen<{
+			filename: string;
+			downloaded_bytes: number;
+			total_bytes: number;
+		}>("local-model-progress", (e) => {
+			const { filename, downloaded_bytes, total_bytes } = e.payload;
+			const pct = total_bytes > 0 ? (downloaded_bytes / total_bytes) * 100 : 0;
+			setDownloadProgress({ filename, pct });
+		});
+		return () => {
+			unlisten.then((fn) => fn());
+		};
+	}, []);
+
 	const { imageTagsMap, addTag, removeTag } = useTags();
 
 	useImperativeHandle(ref, () => ({
 		startNaming,
 		openHelp: () => setHelpOpen(true),
+		openSettings: () => { openSettings(); },
 	}));
 
 	const commitName = () => {
@@ -367,6 +410,31 @@ function TopNav({
 		}
 	};
 
+	const handleDownloadModel = async () => {
+		setIsDownloading(true);
+		downloadCancelRef.current = false;
+		try {
+			await invoke("download_model_file", {
+				url: TEXT_MODEL_URL,
+				filename: "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
+			});
+			if (!downloadCancelRef.current) {
+				await invoke("download_model_file", {
+					url: MMPROJ_URL,
+					filename: "mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf",
+				});
+			}
+			if (!downloadCancelRef.current) {
+				setLocalModelPresent(true);
+			}
+		} catch (err) {
+			console.error("[keep] model download failed:", err);
+		} finally {
+			setIsDownloading(false);
+			setDownloadProgress(null);
+		}
+	};
+
 	const saveSettings = async () => {
 		await Promise.all([
 			setSetting("api_key", settings.apiKey),
@@ -381,7 +449,7 @@ function TopNav({
 			<div
 				data-tauri-drag-region
 				className={[
-					"grid grid-cols-[1fr_auto_1fr] flex-shrink-0 items-center px-4 pt-[44px] pb-4 backdrop-blur-xl border-b",
+					"relative flex flex-shrink-0 items-center px-4 pt-[44px] pb-4 backdrop-blur-xl border-b",
 					"transition-[background-color,border-color] duration-200 ease-out",
 					scrolled
 						? "bg-background/80 border-border"
@@ -394,7 +462,7 @@ function TopNav({
 					onClick={onLogoClick}
 					onMouseEnter={() => setLogoHovered(true)}
 					onMouseLeave={() => setLogoHovered(false)}
-					className={`shrink-0 w-fit text-left select-none text-3xl font-black uppercase leading-none tracking-[-0.03em] text-[#392115] cap-trim transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] origin-left ${scrolled ? "cursor-pointer" : "cursor-default"}`}
+					className={`shrink-0 w-fit text-left select-none text-3xl font-black uppercase leading-none tracking-[-0.03em] text-[#392115] cap-trim transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] origin-left cursor-default`}
 					style={{
 						transform: `scale(0.75) translateY(${scrolled && logoHovered ? "-4px" : "0px"})`,
 					}}
@@ -404,8 +472,8 @@ function TopNav({
 
 				{/* Tabs */}
 				<div
-					className="flex items-center gap-6 transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] origin-center"
-					style={{ transform: "scale(0.75)" }}
+					className="absolute left-1/2 -translate-x-1/2 flex items-center gap-6 transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] origin-center"
+					style={{ transform: "translateX(-50%) scale(0.75)" }}
 				>
 					{TABS.map((tab) => {
 						const isDisabled = tab.id === "bin" && binImages.length === 0;
@@ -445,7 +513,7 @@ function TopNav({
 				</div>
 
 				{/* Right controls */}
-				<div className="flex items-center justify-end gap-3">
+				<div className="ml-auto flex items-center gap-3">
 					{/* Sort + col slider group */}
 					<div className="flex items-center gap-2">
 						<button
@@ -602,79 +670,158 @@ function TopNav({
 				<AlertDialog.Portal>
 					<AlertDialog.Backdrop className="fixed inset-0 z-40 bg-black/50 transition-opacity duration-[200ms] ease-out data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
 					<AlertDialog.Viewport className="fixed inset-0 z-50 flex items-center justify-center p-4">
-						<AlertDialog.Popup className="w-full max-w-sm rounded-xl border border-border bg-background p-5 shadow-xl transition-[opacity,transform] duration-[200ms] ease-[cubic-bezier(0.23,1,0.32,1)] data-[starting-style]:opacity-0 data-[starting-style]:scale-95 data-[ending-style]:opacity-0 data-[ending-style]:scale-95">
+						<AlertDialog.Popup
+							className="w-full max-w-sm rounded-xl border border-border bg-background p-5 shadow-xl transition-[opacity,transform] duration-[200ms] ease-[cubic-bezier(0.23,1,0.32,1)] data-[starting-style]:opacity-0 data-[starting-style]:scale-95 data-[ending-style]:opacity-0 data-[ending-style]:scale-95"
+							onKeyDown={(e) => { if (e.key === "Escape") saveSettings(); }}
+						>
 							<AlertDialog.Title className="text-base font-semibold">
 								Settings
 							</AlertDialog.Title>
 
 							<div className="mt-4 space-y-4">
-								{/* API Key */}
-								<div>
-									<label
-										htmlFor="setting-api-key"
-										className="mb-1.5 block text-sm font-medium"
-									>
-										OpenRouter API Key
-									</label>
-									<div className="relative">
-										<input
-											id="setting-api-key"
-											type={settings.showApiKey ? "text" : "password"}
-											value={settings.apiKey}
-											onChange={(e) =>
-												settingsDispatch({
-													type: "setApiKey",
-													value: e.target.value,
-												})
-											}
-											placeholder="sk-or-..."
-											className="h-9 w-full rounded-md border border-input bg-background px-3 pr-9 text-sm outline-none focus:ring-1 focus:ring-ring"
-										/>
-										<button
-											type="button"
-											onClick={() =>
-												settingsDispatch({ type: "toggleShowApiKey" })
-											}
-											className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-										>
-											{settings.showApiKey ? (
-												<RiEyeOffLine className="size-4" />
-											) : (
-												<RiEyeLine className="size-4" />
+								{/* ── AI Model ── */}
+								<div className="space-y-3">
+									<p className="text-sm font-medium text-muted-foreground">AI Model</p>
+
+									{/* Local */}
+									<div>
+										<p className="mb-1.5 text-sm font-medium">Local</p>
+										{localModelPresent ? (
+											<div className="flex items-center gap-2">
+												<RiCheckLine className="size-4 text-green-500 shrink-0" />
+												<div>
+													<span className="text-sm font-medium text-green-600">
+														KEEP AI Ready
+													</span>
+													<p className="text-xs text-muted-foreground">
+														Qwen2.5-VL-3B · ~3.3 GB
+													</p>
+												</div>
+											</div>
+										) : isDownloading ? (
+											<div className="space-y-2">
+												{downloadProgress && (
+													<div>
+														<div className="mb-1 flex items-center justify-between">
+															<span className="max-w-[200px] truncate text-xs text-muted-foreground">
+																{downloadProgress.filename}
+															</span>
+															<span className="ml-2 shrink-0 text-xs text-muted-foreground">
+																{Math.round(downloadProgress.pct)}%
+															</span>
+														</div>
+														<div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+															<div
+																className="h-full rounded-full bg-foreground transition-all duration-300"
+																style={{ width: `${downloadProgress.pct}%` }}
+															/>
+														</div>
+													</div>
+												)}
+												<Button
+													variant="outline"
+													size="sm"
+													className="w-full"
+													onClick={() => {
+														downloadCancelRef.current = true;
+														setIsDownloading(false);
+														setDownloadProgress(null);
+													}}
+												>
+													Cancel
+												</Button>
+											</div>
+										) : (
+											<Button
+												variant="outline"
+												size="sm"
+												className="w-full"
+												onClick={handleDownloadModel}
+											>
+												<RiSparkling2Line className="mr-1.5 size-3.5" />
+												Download KEEP AI (~3.3 GB)
+											</Button>
+										)}
+									</div>
+
+									{/* Cloud */}
+									<div className={localModelPresent ? "opacity-40 pointer-events-none select-none" : ""}>
+										<p className="mb-1.5 text-sm font-medium">
+											Cloud
+											{localModelPresent && (
+												<span className="ml-1.5 font-normal text-muted-foreground">
+													(inactive)
+												</span>
 											)}
-										</button>
+										</p>
+										<div className="space-y-2">
+											<div>
+												<label
+													htmlFor="setting-api-key"
+													className="mb-1.5 block text-xs text-muted-foreground"
+												>
+													OpenRouter API Key
+												</label>
+												<div className="relative">
+													<input
+														id="setting-api-key"
+														type={settings.showApiKey ? "text" : "password"}
+														value={settings.apiKey}
+														onChange={(e) =>
+															settingsDispatch({
+																type: "setApiKey",
+																value: e.target.value,
+															})
+														}
+														placeholder="sk-or-..."
+														className="h-9 w-full rounded-md border border-input bg-background px-3 pr-9 text-sm outline-none focus:ring-1 focus:ring-ring"
+													/>
+													<button
+														type="button"
+														onClick={() =>
+															settingsDispatch({ type: "toggleShowApiKey" })
+														}
+														className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+													>
+														{settings.showApiKey ? (
+															<RiEyeOffLine className="size-4" />
+														) : (
+															<RiEyeLine className="size-4" />
+														)}
+													</button>
+												</div>
+											</div>
+											<div>
+												<label
+													htmlFor="setting-model"
+													className="mb-1.5 block text-xs text-muted-foreground"
+												>
+													Model
+												</label>
+												<input
+													id="setting-model"
+													type="text"
+													value={settings.model}
+													onChange={(e) =>
+														settingsDispatch({
+															type: "setModel",
+															value: e.target.value,
+														})
+													}
+													placeholder="anthropic/claude-sonnet-4-6"
+													className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-1 focus:ring-ring"
+												/>
+											</div>
+										</div>
 									</div>
 								</div>
 
-								{/* Model */}
-								<div>
-									<label
-										htmlFor="setting-model"
-										className="mb-1.5 block text-sm font-medium"
-									>
-										Model
-									</label>
-									<input
-										id="setting-model"
-										type="text"
-										value={settings.model}
-										onChange={(e) =>
-											settingsDispatch({
-												type: "setModel",
-												value: e.target.value,
-											})
-										}
-										placeholder="anthropic/claude-sonnet-4-6"
-										className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-1 focus:ring-ring"
-									/>
-								</div>
+								{/* ── Analysis ── */}
+								<div className="border-t border-border/50 pt-4 space-y-2">
+									<p className="mb-3 text-sm font-medium text-muted-foreground">Analysis</p>
 
-								{/* Analyze All */}
-								<div>
 									<Button
-										variant={
-											settings.analyzeProgress ? "destructive" : "outline"
-										}
+										variant={settings.analyzeProgress ? "destructive" : "outline"}
 										size="sm"
 										className="w-full"
 										onClick={handleAnalyzeAll}
@@ -692,14 +839,9 @@ function TopNav({
 											</>
 										)}
 									</Button>
-								</div>
 
-								{/* Vision scan */}
-								<div>
 									<Button
-										variant={
-											settings.visionProgress ? "destructive" : "outline"
-										}
+										variant={settings.visionProgress ? "destructive" : "outline"}
 										size="sm"
 										className="w-full"
 										onClick={handleVisionScan}
@@ -714,39 +856,33 @@ function TopNav({
 											"Scan with Vision"
 										)}
 									</Button>
-									<p className="mt-1.5 text-xs text-muted-foreground">
-										Auto-tag + OCR all unindexed images using macOS Vision — no
-										API key needed
+									<p className="text-xs text-muted-foreground">
+										Auto-tag + OCR all unindexed images using macOS Vision — no API key needed
 									</p>
-								</div>
 
-								{/* Analyze Mode */}
-								<div>
-									<label
-										htmlFor="setting-analyze-mode"
-										className="mb-1.5 block text-sm font-medium"
-									>
-										Auto-analyze on open
-									</label>
-									<select
-										id="setting-analyze-mode"
-										value={settings.analyzeMode}
-										onChange={(e) =>
-											settingsDispatch({
-												type: "setAnalyzeMode",
-												mode: e.target.value as AnalyzeMode,
-											})
-										}
-										className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-1 focus:ring-ring"
-									>
-										<option value="manual">Off</option>
-										<option value="auto_new">
-											Auto — unanalyzed images only
-										</option>
-										<option value="auto_all">
-											Auto — all images (re-analyze)
-										</option>
-									</select>
+									<div className="pt-1">
+										<label
+											htmlFor="setting-analyze-mode"
+											className="mb-1.5 block text-sm font-medium"
+										>
+											Auto-analyze on open
+										</label>
+										<select
+											id="setting-analyze-mode"
+											value={settings.analyzeMode}
+											onChange={(e) =>
+												settingsDispatch({
+													type: "setAnalyzeMode",
+													mode: e.target.value as AnalyzeMode,
+												})
+											}
+											className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-1 focus:ring-ring"
+										>
+											<option value="manual">Off</option>
+											<option value="auto_new">Auto — unanalyzed images only</option>
+											<option value="auto_all">Auto — all images (re-analyze)</option>
+										</select>
+									</div>
 								</div>
 							</div>
 
