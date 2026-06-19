@@ -4,6 +4,10 @@
 
 KEEP is a local-first macOS app for saving, organizing, and browsing visual inspiration.  Without the algorithm deciding what you want to see.
 
+![Grid view](screenshots/grid.png)
+
+![Lightbox](screenshots/lightbox.png) ![Search](screenshots/search.png)
+
 ## What it does
 
 - **Drag images in.** Or paste them. Or pick files. 
