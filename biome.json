@@ -1,0 +1,21 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.0/schema.json",
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    },
+    "linter": {
+      "enabled": true,
+      "rules": {
+        "correctness": {
+          "noUnknownProperty": {
+            "level": "error",
+            "options": {
+              "ignore": ["leading-trim", "text-edge"]
+            }
+          }
+        }
+      }
+    }
+  }
+}
