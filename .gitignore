@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Claude Code internals
+.claude/
+.agents/
+
 # Editor directories and files
 .vscode
 .idea
