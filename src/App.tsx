@@ -55,9 +55,12 @@ function AppContent() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const topNavRef = useRef<TopNavHandle>(null);
   const gridRef = useRef<GridHandle>(null);
+  const navContainerRef = useRef<HTMLDivElement>(null);
   const [cmdKOpen, setCmdKOpen] = useState(false);
   const [numCols, setNumCols] = useState(4);
   const [numColsManual, setNumColsManual] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
+  const [navHeight, setNavHeight] = useState(0);
   const { getSetting, setSetting } = useSettings();
 
   useEffect(() => {
@@ -65,6 +68,13 @@ function AppContent() {
       if (v) { setNumCols(parseInt(v)); setNumColsManual(true); }
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!navContainerRef.current) return;
+    const ro = new ResizeObserver(([e]) => setNavHeight(e.contentRect.height));
+    ro.observe(navContainerRef.current);
+    return () => ro.disconnect();
+  }, []);
 
   const handleNumColsChange = (n: number) => {
     setNumCols(n);
@@ -111,11 +121,13 @@ function AppContent() {
 
   return (
     <TooltipProvider>
-      <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
+      <div className="relative h-screen overflow-hidden bg-background text-foreground">
+        <div ref={navContainerRef} data-tauri-drag-region className="absolute top-0 left-0 right-0 z-10">
         <TopNav
           ref={topNavRef}
+          scrolled={scrolled}
           activeTab={view.activeTab}
-          onTabChange={(tab) => dispatch({ type: "setTab", tab })}
+          onTabChange={(tab) => { setScrolled(false); dispatch({ type: "setTab", tab }); }}
           searchQuery={view.searchQuery}
           onSearchChange={(query) => dispatch({ type: "setSearchQuery", query })}
           sort={view.sort}
@@ -127,8 +139,12 @@ function AppContent() {
           numCols={numCols}
           onNumColsChange={handleNumColsChange}
           onAddFiles={() => gridRef.current?.openFilePicker()}
+          onLogoClick={() => gridRef.current?.scrollToTop()}
         />
+        </div>
         <Grid
+          onScrolledChange={setScrolled}
+          navHeight={navHeight}
           ref={gridRef}
           activeTab={view.activeTab}
           sort={view.sort}

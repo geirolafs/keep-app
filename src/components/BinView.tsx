@@ -9,7 +9,7 @@ type ConfirmState =
   | { type: "batch"; ids: string[] }
   | { type: "empty" };
 
-export function BinView() {
+export function BinView({ navHeight = 0 }: { navHeight?: number }) {
   const { binImages, imgSrc, restoreImage, permanentDelete, emptyBin } = useImages();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
@@ -75,7 +75,7 @@ export function BinView() {
 
   if (binImages.length === 0) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-2 text-muted-foreground">
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 text-muted-foreground" style={{ paddingTop: navHeight }}>
         <RiDeleteBin2Line className="size-10 opacity-30" />
         <p className="text-sm">Bin is empty</p>
       </div>
@@ -83,7 +83,7 @@ export function BinView() {
   }
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden">
+    <div className="flex flex-1 flex-col overflow-hidden" style={{ paddingTop: navHeight }}>
       {/* Toolbar */}
       <div className="flex items-center gap-2 border-b border-border px-4 py-2">
         <span className="text-xs text-muted-foreground">
