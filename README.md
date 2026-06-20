@@ -22,9 +22,35 @@ KEEP is a local-first macOS app for saving, organizing, and browsing visual insp
 
 - **Lightbox** full-screen view with a frosted glass sidebar and a gradient backdrop extracted from the image's color palette. Aesthetics matter in the tools you use to steal aesthetics.
 
-- **Search** ⌘K dialog. Keywords, tags, collections. Works on descriptions too if you ran AI on it.
+- **OCR** extracts text from images. Screenshots, posters, book pages — if there's text in it, you can search for it.
+
+- **Copy** ⌘C copies the image to your clipboard. For videos it copies the current frame, which is more useful than it sounds.
+
+- **Search** ⌘K dialog. Keywords, tags, collections, OCR text, AI descriptions.
 
 - **Bin** soft delete. 90-day auto-purge. It's not gone, it's just resting.
+
+## Shortcuts
+
+| Key | Action |
+|---|---|
+| ⌘K | Search palette |
+| ⌘F | Focus search bar |
+| ⌘, | Settings |
+| ← → | Navigate lightbox |
+| ⌘C | Copy to clipboard |
+| ⌫ | Delete (lightbox) |
+| E | Edit title |
+| A | Analyze |
+| Scroll | Zoom in/out |
+| 0 | Reset zoom |
+| Drag | Pan when zoomed |
+| Dbl-click | Toggle 2× zoom |
+| Esc | Close |
+| Del | Delete selected |
+| ⌘+click | Multi-select |
+| Shift+click | Range select |
+| ? | This list |
 
 ## AI: cloud or local
 
