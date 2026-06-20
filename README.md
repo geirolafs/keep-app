@@ -4,15 +4,13 @@
 
 KEEP is a local-first macOS app for saving, organizing, and browsing visual inspiration. Without the algorithm deciding what you want to see.
 
-![Grid view](screenshots/grid.png)
-
-![Lightbox](screenshots/lightbox.png) ![Search](screenshots/search.png)
-
 ## What it does
 
 - **Drag images in.** Or paste them. Or pick files.
 
 - **Browse them** in a masonry grid that you can resize because a fixed layout can't be trusted.
+
+![Grid view](screenshots/grid.png)
 
 - **Tag and organize** into collections, future-you will definitely remember what "vibes 3" means. Drag collections to reorder them.
 
@@ -24,11 +22,15 @@ KEEP is a local-first macOS app for saving, organizing, and browsing visual insp
 
 - **Lightbox** full-screen view with a frosted glass sidebar and a gradient backdrop extracted from the image's color palette. Aesthetics matter in the tools you use to steal aesthetics.
 
+![Lightbox](screenshots/lightbox.png)
+
 - **OCR** extracts text from images. Screenshots, posters, book pages — if there's text in it, you can search for it.
 
 - **Copy** ⌘C copies the image to your clipboard. For videos it copies the current frame, which is more useful than it sounds.
 
 - **Search** ⌘K dialog. Keywords, tags, collections, OCR text, AI descriptions.
+
+![Search](screenshots/search.png)
 
 - **Bin** soft delete. 90-day auto-purge. It's not gone, it's just resting.
 
