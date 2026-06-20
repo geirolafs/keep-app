@@ -31,8 +31,8 @@ Phase 7 shipped so far:
 
 Phase 7 remaining — see PLAN.md:
 - [x] Bin / soft delete — schema migration v5 (`deleted_at`), Bin tab, auto-purge 90d, macOS Trash
-- [ ] Local AI — macOS Vision Framework (silent tagging) + Moondream2 (local LLM, ~1.3 GB)
-- [ ] Social URL cards — paste tweet/URL → og: scrape → `<PostCard>` in lightbox
+- [x] Local AI — macOS Vision Framework (silent auto-tagging + OCR) + Qwen2.5-VL-3B local LLM (~3.3 GB one-time download)
+- [x] Social URL cards — paste tweet/URL → og: scrape → `<PostCard>` in lightbox
 - [ ] AI semantic search — `sqlite-vec` embeddings, hybrid keyword + cosine
 
 Phase 8 — Browser Extension + Social Posts (see PLAN.md)
@@ -79,35 +79,43 @@ Phase 9 — Canvas/Spaces — custom SVG infinite canvas, `boards` + `board_item
 
 ```
 src/
-  App.tsx                   — root: providers (Tags, Collections), TopNav, Grid, Lightbox
+  App.tsx                   — root: providers (Images, Tags, Collections), TopNav, Grid, Lightbox
   components/
-    TopNav.tsx              — tab bar (All/Collections/Tags), search input, sort, settings gear, Analyze All, dev snapshot buttons
-    Grid.tsx                — masonry grid, drag-drop listener, file picker, multi-select, collection/tag views, Lightbox mount
+    TopNav.tsx              — tab bar (All/Collections/Tags/Bin), search, sort, ? help, settings modal (inline), Analyze All progress
+    Grid.tsx                — masonry grid, drag-drop listener, file picker, multi-select, collection/tag/bin views, Lightbox mount
     Lightbox.tsx            — fullscreen overlay, two-panel (image + 300px sidebar), analyze, generate prompt, tags/collections/notes/palette
+    BinView.tsx             — deleted items grid; per-item restore + permanent delete; bulk restore; Empty Bin
+    PostCard.tsx            — renders kind='link' cards in lightbox sidebar (platform badge, og: title/description/image)
+    CmdKDialog.tsx          — ⌘K search overlay (cmdk CommandDialog); grouped Images/Collections/Tags results
     LazyImage.tsx           — IntersectionObserver-based lazy img with dominant-color placeholder
-    ConfirmDialog.tsx       — reusable confirm modal (replaces window.confirm)
-    SettingsModal.tsx       — API key, model, auto-analyze mode
-    ToastManager.tsx        — toast queue + renderer
   hooks/
-    use-images.ts           — central image state: load, saveBlob/savePath/saveUrl, delete, update*, reset, imgSrc (convertFileSrc wrapper), paste listener
-    use-tags.ts             — TagsContext: tags list, addTag, removeTag, rename
-    use-collections.ts      — CollectionsContext: collections list, create, rename, delete, add/remove image
+    use-images.ts           — ImagesContext: load, saveBlob/savePath/saveUrl/saveLink, delete, update*, reset, imgSrc (convertFileSrc wrapper), paste listener, pendingItems
+    use-tags.ts             — TagsContext: tags list, addTag, removeTag, rename, deleteTag
+    useCollections.ts       — CollectionsContext: collections list, create, rename, delete, add/remove image, reorder, getCollectionThumbs
     use-settings.ts         — getSetting/setSetting via SQLite settings table
   mocks/                    — Tauri API stubs for `bun run browser` preview mode
 
 src-tauri/src/lib.rs        — ALL Rust commands:
-  process_and_save()        — core pipeline: save file, SVG/GIF/JXL/HEIC branches, thumbnail (800px JPEG target), color-thief palette
+  save_thumb()              — resize to 600px Lanczos3 JPEG; shared by all save paths
+  compute_thumb_hash()      — ThumbHash LQIP from 100px Triangle downsample
+  process_and_save()        — core pipeline: save file, SVG/GIF/JXL/HEIC/video branches, thumbnail, color-thief palette, Vision tags
+  run_vision()              — shells out to keep-vision binary → {tags, ocr_text}
   decode_jxl()              — jxl-oxide → DynamicImage
   decode_heic()             — libheif-rs → DynamicImage
-  save_image_bytes/from_path/from_url — IPC entry points → process_and_save
-  analyze_image()           — base64 thumb → OpenRouter vision → {title, tags, description}
-  generate_prompt()         — (planned) base64 thumb → gemini-2.0-flash → prompt string
+  save_image_bytes/from_path/from_url/save_link — IPC entry points → process_and_save / og: scrape
+  analyze_image()           — base64 thumb → OpenRouter or local llama-mtmd-cli → {title, tags, description}
+  analyze_local()           — llama-mtmd-cli sidecar → {title, tags, description} (no network)
+  analyze_vision_item()     — Vision Framework classify+OCR for backfill
+  generate_prompt()         — base64 thumb → gemini-2.5-flash or local llama-mtmd-cli → prompt string
+  trash_files()             — move file + thumb to macOS Trash (soft delete)
+  copy_files_to_clipboard() — copy multiple image files to macOS clipboard
+  backfill_thumb_hashes()   — retroactively compute thumb_hash for existing library
   delete_image_files()      — remove file_path + thumb_path from disk
   reset_all_images()        — nuke images/ + thumbs/ dirs
-  save/load_example_snapshot — dev E1/E2 snapshot system
-  run()                     — Tauri builder, SQLite migrations v1–v3, command registration
+  save/load_example_snapshot — dev E1 snapshot system
+  run()                     — Tauri builder, SQLite migrations v1–v9, command registration
 
-src-tauri/Cargo.toml        — image crate (png/jpeg/gif/webp/bmp/tiff/avif-native), jxl-oxide, libheif-rs, color-thief, reqwest, base64
+src-tauri/Cargo.toml        — image crate (png/jpeg/gif/webp/bmp/tiff/avif-native), jxl-oxide, libheif-rs, color-thief, thumbhash, reqwest, base64, scraper
 ```
 
 **State flow:** Images/Tags/Collections are all React Context (`ImagesProvider`, `TagsProvider`, `CollectionsProvider` in App.tsx). Mutations call SQLite directly via `tauri-plugin-sql`, then update shared context state — no server round-trip after the initial load.

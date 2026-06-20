@@ -42,7 +42,7 @@ Build a visual bookmarking tool as a learning exercise:
 - [x] Drag-and-drop image files onto app window (Tauri onDragDropEvent)
 - [x] File picker import (tauri-plugin-dialog, + Add button)
 - [x] Copy image from URL (paste URL → save_image_from_url Rust command)
-- [x] Rust: generate 400px JPEG thumbnail on save (image crate, FilterType::Triangle) — upgraded to 1600px Lanczos3 in Phase 7
+- [x] Rust: generate 400px JPEG thumbnail on save (image crate, FilterType::Triangle) — upgraded to 600px Lanczos3 in Phase 7
 - [x] Rust: extract dominant color + 5-color palette (color-thief crate)
 - [x] Masonry/grid display with dominant-color card backgrounds + hover overlay
 - [x] Click image → ImageDetail slide-in panel
@@ -119,7 +119,7 @@ Add support for additional file formats beyond the current `png | jpg | jpeg | g
 ### Phase 7 — Polish & Features
 
 #### Thumbnails
-- [x] **Retina-crisp thumbnails**: 1600px max dimension, `FilterType::Lanczos3`, JPEG quality 85. `save_thumb()` Rust helper used by all three code paths (process_and_save, process_video_from_path, refresh_thumbnails).
+- [x] **Retina-crisp thumbnails**: 600px max dimension, `FilterType::Lanczos3`, JPEG quality 85. `save_thumb()` Rust helper used by all three code paths (process_and_save, process_video_from_path, refresh_thumbnails).
 - [x] **Refresh Thumbnails**: `refresh_thumbnails(items)` Rust command; JS loops per-image calling with single-item slice for `x of y` progress; skips SVG/GIF/video (thumb = file). Button in Settings → Developer section.
 
 #### Grid
@@ -233,6 +233,18 @@ Replaces `analyze_image` (title + tags + description) with a fully local pipelin
 
 ---
 
+### Pre-Phase 8 Priorities
+
+Before adding more features, harden what exists:
+
+1. **Capture & retrieval first** — make save/search bulletproof before new sources
+2. **Docs** — license, CONTRIBUTING, roadmap, known limitations
+3. **Tauri security** — tighten CSP, capability allowlists, IPC surface
+4. **Scale testing** — import/search perf with 5 k–20 k items; identify bottlenecks
+5. **Then** browser extension + Spaces (Phase 8 / 9)
+
+---
+
 ### Phase 8 — Browser Extension + Social Posts
 
 #### Native Messaging Host
@@ -342,7 +354,9 @@ CREATE TABLE images (
   -- v6 (Phase 7)
   ocr_text    TEXT,              -- NULL = never Vision-scanned; "" = scanned, no text found
   -- v7 (Phase 8)
-  post_meta   TEXT               -- JSON: platform, author, caption, imageUrls[], quoted{}
+  post_meta   TEXT,              -- JSON: platform, author, caption, imageUrls[], quoted{}
+  -- v8 (Phase 7)
+  thumb_hash  TEXT               -- ThumbHash LQIP for progressive load
 );
 
 CREATE TABLE tags (
@@ -359,8 +373,7 @@ CREATE TABLE image_tags (
 CREATE TABLE collections (
   id         TEXT PRIMARY KEY,   -- UUIDv7
   name       TEXT UNIQUE NOT NULL,
-  -- v9 (Phase 7)
-  sort_order INTEGER NOT NULL DEFAULT 0
+  sort_order INTEGER NOT NULL DEFAULT 0  -- v9 (Phase 7)
 );
 
 CREATE TABLE collection_images (
@@ -395,6 +408,10 @@ get_file_size(file_path)                        -> u64        -- fs::metadata().
 get_local_model_status()                        -> {present: bool}
 download_model_file(url, filename)              -- streams to {app_data}/models/, emits progress events
 delete_local_model()                            -- moves both model files to macOS Trash via trash crate
+analyze_vision_item(thumb_path)                 -> VisionAnalysis  -- Vision Framework classify+OCR for backfill
+backfill_thumb_hashes(items)                    -> Vec<HashResult> -- retroactively compute thumb_hash for existing library
+copy_files_to_clipboard(file_paths)             -- copy multiple image files to macOS clipboard
+trash_files(file_path, thumb_path)              -- move file + thumb to macOS Trash (used by soft delete)
 ```
 
 ---
