@@ -3,4 +3,4 @@
 # requires 8-byte alignment. The rustc-wrapper patches each proc-macro
 # dylib immediately after rustc produces it.
 [build]
-rustc-wrapper = "/Users/olafsson/Developer/tries/2026-06-16-gather-os/mood/src-tauri/rustc-wrapper.sh"
+rustc-wrapper = "/Users/olafsson/Developer/tries/2026-06-16-gather-os/keep/src-tauri/rustc-wrapper.sh"
