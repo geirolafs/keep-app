@@ -10,10 +10,18 @@ export type AnalyzeMode = "manual" | "auto_all" | "auto_new";
 // api_key lives in the macOS Keychain (get_api_key/set_api_key Rust commands),
 // not the settings table — plaintext SQLite leaks the secret to anything that
 // can read the app data dir. Reads migrate a legacy settings-table key once.
+// Cached after first read: every keychain access can trigger a macOS prompt on
+// unsigned builds, so we pay that at most once per launch.
+let apiKeyCache: string | null | undefined;
+
 async function getApiKey(): Promise<string | null> {
+  if (apiKeyCache !== undefined) return apiKeyCache;
   try {
     const stored = await invoke<string>("get_api_key");
-    if (stored) return stored;
+    if (stored) {
+      apiKeyCache = stored;
+      return stored;
+    }
     const db = await getDb();
     const rows = await db.select<{ value: string }[]>(
       "SELECT value FROM settings WHERE key = 'api_key'"
@@ -22,11 +30,13 @@ async function getApiKey(): Promise<string | null> {
     if (legacy) {
       await invoke("set_api_key", { key: legacy });
       await db.execute("DELETE FROM settings WHERE key = 'api_key'");
+      apiKeyCache = legacy;
       return legacy;
     }
+    apiKeyCache = null;
     return null;
   } catch {
-    return null;
+    return null; // transient (e.g. prompt denied) — don't cache, retry next read
   }
 }
 
@@ -48,6 +58,7 @@ async function setSetting(key: string, value: string): Promise<void> {
   if (key === "api_key") {
     try {
       await invoke("set_api_key", { key: value });
+      apiKeyCache = value || null;
     } catch (err) {
       console.error("[keep] set_api_key failed:", err);
     }
