@@ -341,7 +341,7 @@ const EMPTY_TAGS: { id: string; name: string }[] = [];
 // viewport cards stay mounted.
 const GAP = 4;
 const SCROLL_BUCKET = 300;
-const OVERSCAN = 1500;
+const OVERSCAN = 2400; // generous: retina thumbs need decode lead time ahead of scroll
 
 // Memoized masonry card (ticket #18): the +50 windowing bump appends new cards
 // while existing ones keep identical props and skip reconciliation — per-bump
@@ -389,6 +389,16 @@ const MasonryCard = memo(function MasonryCard({
 						{img.kind === "video" ? (
 							<video
 								src={imgSrc(img.file_path)}
+								// poster + explicit aspect box: the windowed grid positions cards
+								// by computed height, so an unloaded video must still occupy its
+								// slot (0-height video = visible hole) and paint instantly on
+								// remount instead of waiting for the media file.
+								poster={img.thumb_path !== img.file_path ? imgSrc(img.thumb_path) : undefined}
+								style={
+									img.width > 0 && img.height > 0
+										? { aspectRatio: `${img.width} / ${img.height}` }
+										: { aspectRatio: "1 / 1" }
+								}
 								autoPlay
 								muted
 								loop
@@ -415,8 +425,11 @@ const MasonryCard = memo(function MasonryCard({
 											(img.kind === "link" ? "#1a1a1a" : undefined))
 								}
 								thumbHash={img.thumb_hash ?? undefined}
-								width={img.width}
-								height={img.height}
+								// dimensionless media (SVG etc.): force the square box the
+								// windowed layout reserved — a collapsed 0-height card reads
+								// as a hole in the grid
+								width={img.width > 0 ? img.width : 1}
+								height={img.height > 0 ? img.height : 1}
 								className="block w-full"
 								draggable={false}
 							/>
