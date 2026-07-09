@@ -417,8 +417,44 @@ pub(crate) async fn save_from_path(
     process_and_save(app, &bytes, &ext, source_url).await
 }
 
+// SSRF guard for webview-supplied URLs: http(s) only, and the host must not
+// resolve to loopback/private/link-local ranges (blocks http://localhost:…,
+// cloud metadata IPs, and LAN hosts).
+fn validate_external_url(raw: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(raw).map_err(|e| e.to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!("unsupported URL scheme: {}", parsed.scheme()));
+    }
+    let host = parsed.host_str().ok_or("URL has no host")?;
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    use std::net::{IpAddr, ToSocketAddrs};
+    let addrs = (host, port).to_socket_addrs().map_err(|e| e.to_string())?;
+    for addr in addrs {
+        let private = match addr.ip() {
+            IpAddr::V4(v4) => {
+                v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_unspecified()
+                    || v4.is_broadcast()
+            }
+            IpAddr::V6(v6) => {
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || (v6.segments()[0] & 0xfe00) == 0xfc00 // unique-local
+                    || (v6.segments()[0] & 0xffc0) == 0xfe80 // link-local
+            }
+        };
+        if private {
+            return Err("URL resolves to a private address".to_string());
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn save_image_from_url(app: tauri::AppHandle, url: String) -> Result<SavedImage, String> {
+    validate_external_url(&url)?;
     let response = reqwest::get(&url)
         .await
         .map_err(|e| e.to_string())?
@@ -619,7 +655,10 @@ async fn download_model_file(
     window: tauri::WebviewWindow,
 ) -> Result<(), String> {
     // filename is frontend-supplied — anything but the two known model files is
-    // a path-traversal attempt
+    // a path-traversal attempt. The fetch URL is derived here from the filename;
+    // the frontend-supplied url is ignored (SSRF hardening — sources are fixed).
+    const MODEL_BASE: &str =
+        "https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/";
     const MODEL_FILES: &[&str] = &[
         "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
         "mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf",
@@ -627,6 +666,8 @@ async fn download_model_file(
     if !MODEL_FILES.contains(&filename.as_str()) {
         return Err(format!("unexpected model filename: {filename}"));
     }
+    let _ = url;
+    let url = format!("{MODEL_BASE}{filename}");
 
     let models_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("models");
     std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
@@ -974,7 +1015,7 @@ fn copy_image_to_clipboard(app: tauri::AppHandle, file_path: String) -> Result<(
 fn copy_files_to_clipboard(file_paths: Vec<String>) -> Result<(), String> {
     let items: Vec<String> = file_paths
         .iter()
-        .map(|p| format!("POSIX file \"{}\"", p.replace('"', "\\\"")))
+        .map(|p| format!("POSIX file \"{}\"", p.replace('\\', "\\\\").replace('"', "\\\"")))
         .collect();
     let script = format!("set the clipboard to {{{}}}", items.join(", "));
     clipboard_watch::mark_own_copy(); // before the write — the watcher may tick mid-write
@@ -1095,6 +1136,7 @@ struct LinkMeta {
 
 #[tauri::command]
 async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, String> {
+    validate_external_url(&url)?;
     let is_tweet = (url.contains("x.com/") || url.contains("twitter.com/")) && url.contains("/status/");
 
     let client = reqwest::Client::builder()
@@ -1362,6 +1404,34 @@ fn inbox_ack(id: String) {
     inbox::ack(&id);
 }
 
+// The OpenRouter key lives in the macOS Keychain, not the SQLite settings
+// table — keeps the secret off disk and out of app-data snapshots/backups.
+const KEYCHAIN_SERVICE: &str = "is.geir.keep";
+const KEYCHAIN_ACCOUNT: &str = "openrouter_api_key";
+
+#[tauri::command]
+fn get_api_key() -> Result<String, String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT).map_err(|e| e.to_string())?;
+    match entry.get_password() {
+        Ok(key) => Ok(key),
+        Err(keyring::Error::NoEntry) => Ok(String::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+fn set_api_key(key: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT).map_err(|e| e.to_string())?;
+    if key.is_empty() {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    } else {
+        entry.set_password(&key).map_err(|e| e.to_string())
+    }
+}
+
 // For JS-side clipboard writes (navigator.clipboard) so capture mode doesn't
 // re-ingest KEEP's own copies.
 #[tauri::command]
@@ -1540,6 +1610,8 @@ pub fn run() {
             set_clipboard_capture,
             set_frontend_ready,
             inbox_ack,
+            get_api_key,
+            set_api_key,
             mark_clipboard_own_copy,
         ])
         .run(tauri::generate_context!())

@@ -40,6 +40,7 @@ thumbhash = "0.1"
 tokio = { version = "1", features = ["time"] }
 objc2 = "0.6"
 url = "2"
+keyring = { version = "3", features = ["apple-native"] }
 
 [profile.release.package."sqlx-macros"]
 opt-level = 0
