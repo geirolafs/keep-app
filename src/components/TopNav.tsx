@@ -2,6 +2,7 @@ import { AlertDialog, AlertDialogContent, AlertDialogTitle, AlertDialogClose } f
 import {
 	RiAddLine,
 	RiCheckLine,
+	RiClipboardLine,
 	RiDeleteBinLine,
 	RiEyeLine,
 	RiEyeOffLine,
@@ -245,6 +246,25 @@ function TopNav({
 			.then((s) => setLocalModelPresent(s.present))
 			.catch(() => {});
 	}, []);
+
+	// clipboard capture — restore persisted state on launch
+	const [clipboardCapture, setClipboardCapture] = useState(false);
+	useEffect(() => {
+		getSetting("clipboard_capture").then((v) => {
+			if (v === "1") {
+				setClipboardCapture(true);
+				invoke("set_clipboard_capture", { enabled: true }).catch(() => {});
+			}
+		});
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
+	const toggleClipboardCapture = () => {
+		const next = !clipboardCapture;
+		setClipboardCapture(next);
+		setSetting("clipboard_capture", next ? "1" : "0").catch(() => {});
+		invoke("set_clipboard_capture", { enabled: next }).catch(() => {});
+	};
 
 	useEffect(() => {
 		const unlisten = listen<{
@@ -661,6 +681,16 @@ function TopNav({
 							</kbd>
 						</div>
 
+						{clipboardCapture && (
+							<button
+								type="button"
+								onClick={toggleClipboardCapture}
+								title="Clipboard capture is on — click to turn off"
+								className="flex h-7 w-7 items-center justify-center rounded-md text-emerald-500 hover:bg-accent transition-colors"
+							>
+								<RiClipboardLine className="size-4 animate-pulse" />
+							</button>
+						)}
 						<button
 							type="button"
 							onClick={onAddFiles}
@@ -914,6 +944,30 @@ function TopNav({
 										</select>
 									</div>
 								</div>
+							</div>
+
+							{/* ── Capture ── */}
+							<div className="mt-4 border-t border-border/50 pt-4">
+								<p className="mb-2 text-sm font-medium text-muted-foreground">
+									Capture
+								</p>
+								<label className="flex cursor-pointer select-none items-start gap-2">
+									<input
+										type="checkbox"
+										checked={clipboardCapture}
+										onChange={toggleClipboardCapture}
+										className="mt-0.5 accent-foreground"
+									/>
+									<span>
+										<span className="block text-sm font-medium">
+											Clipboard capture
+										</span>
+										<span className="block text-xs text-muted-foreground">
+											While on, copied images and URLs are saved to KEEP
+											automatically. A clipboard icon shows in the toolbar.
+										</span>
+									</span>
+								</label>
 							</div>
 
 							{/* Dev tools */}

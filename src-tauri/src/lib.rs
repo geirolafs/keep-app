@@ -4,6 +4,9 @@ use image::imageops::FilterType;
 use tauri::{Emitter, Manager};
 use tauri_plugin_sql::{Builder as SqlBuilder, Migration, MigrationKind};
 
+mod clipboard_watch;
+mod inbox;
+
 fn save_thumb(img: &image::DynamicImage, path: &std::path::Path) -> Result<(), String> {
     let thumb = img.resize(600, 600, FilterType::Lanczos3);
     let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
@@ -41,6 +44,14 @@ struct SavedImage {
     ocr_text: String,
     thumb_hash: Option<String>,
 }
+
+// Accepted file formats — single source of truth for all ingest paths
+// (save_image_from_path, inbox watcher, clipboard capture).
+pub(crate) const MEDIA_EXTS: &[&str] = &[
+    "jpg", "jpeg", "png", "gif", "webp", "avif", "svg", "bmp", "tif", "tiff", "jxl", "heic",
+    "heif", "mp4", "mov", "webm",
+];
+pub(crate) const VIDEO_EXTS: &[&str] = &["mp4", "mov", "webm"];
 
 // ── macOS Vision Framework helper (silent, zero setup) ────────────────────────
 
@@ -378,18 +389,26 @@ async fn save_image_bytes(
 
 #[tauri::command]
 async fn save_image_from_path(app: tauri::AppHandle, path: String) -> Result<SavedImage, String> {
-    let ext = std::path::Path::new(&path)
+    save_from_path(&app, std::path::Path::new(&path), None).await
+}
+
+pub(crate) async fn save_from_path(
+    app: &tauri::AppHandle,
+    path: &std::path::Path,
+    source_url: Option<String>,
+) -> Result<SavedImage, String> {
+    let ext = path
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("png")
-        .to_string();
+        .to_lowercase();
 
-    if ["mp4", "mov", "webm"].iter().any(|v| v.eq_ignore_ascii_case(&ext)) {
-        return process_video_from_path(&app, std::path::Path::new(&path), &ext).await;
+    if VIDEO_EXTS.contains(&ext.as_str()) {
+        return process_video_from_path(app, path, &ext).await;
     }
 
-    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-    process_and_save(&app, &bytes, &ext, None).await
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    process_and_save(app, &bytes, &ext, source_url).await
 }
 
 #[tauri::command]
@@ -865,6 +884,7 @@ fn copy_image_bytes_to_clipboard(png_base64: String) -> Result<(), String> {
     let rgba = img.into_rgba8();
     let (width, height) = rgba.dimensions();
     let pixels = rgba.into_raw();
+    clipboard_watch::mark_own_copy(); // before the write — the watcher may tick mid-write
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     clipboard
         .set_image(arboard::ImageData {
@@ -872,7 +892,8 @@ fn copy_image_bytes_to_clipboard(png_base64: String) -> Result<(), String> {
             height: height as usize,
             bytes: std::borrow::Cow::from(pixels),
         })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -896,6 +917,7 @@ fn copy_image_to_clipboard(file_path: String) -> Result<(), String> {
     let (width, height) = rgba.dimensions();
     let pixels = rgba.into_raw();
 
+    clipboard_watch::mark_own_copy(); // before the write — the watcher may tick mid-write
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     clipboard
         .set_image(arboard::ImageData {
@@ -903,7 +925,8 @@ fn copy_image_to_clipboard(file_path: String) -> Result<(), String> {
             height: height as usize,
             bytes: std::borrow::Cow::from(pixels),
         })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -913,6 +936,7 @@ fn copy_files_to_clipboard(file_paths: Vec<String>) -> Result<(), String> {
         .map(|p| format!("POSIX file \"{}\"", p.replace('"', "\\\"")))
         .collect();
     let script = format!("set the clipboard to {{{}}}", items.join(", "));
+    clipboard_watch::mark_own_copy(); // before the write — the watcher may tick mid-write
     let out = std::process::Command::new("osascript")
         .arg("-e")
         .arg(&script)
@@ -930,11 +954,10 @@ fn resolve_url(img_url: &str, base_url: &str) -> String {
         img_url.to_string()
     } else if img_url.starts_with("//") {
         format!("https:{}", img_url)
-    } else if img_url.starts_with('/') {
-        let origin = base_url.splitn(4, '/').take(3).collect::<Vec<_>>().join("/");
-        format!("{}{}", origin, img_url)
+    } else if let Ok(joined) = url::Url::parse(base_url).and_then(|b| b.join(img_url)) {
+        joined.to_string() // handles "/x", "../x", and bare relative paths
     } else {
-        img_url.to_string() // best-effort for relative paths
+        img_url.to_string()
     }
 }
 
@@ -980,6 +1003,30 @@ fn strip_html_tags(html: &str) -> String {
     Html::parse_fragment(html).root_element().text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+// Fallback card image for pages without og:image. `~=` matches multi-value rel
+// ("alternate icon", "shortcut icon"). Skips .ico/.svg — the image crate can't
+// decode either here.
+fn parse_touch_icon(html: &str) -> Option<String> {
+    use scraper::{Html, Selector};
+    let doc = Html::parse_document(html);
+    for sel in [
+        r#"link[rel~="apple-touch-icon"]"#,
+        r#"link[rel~="apple-touch-icon-precomposed"]"#,
+        r#"link[rel~="icon"]"#,
+    ] {
+        let Ok(s) = Selector::parse(sel) else { continue };
+        for el in doc.select(&s) {
+            if let Some(href) = el.value().attr("href") {
+                let p = href.split(['?', '#']).next().unwrap_or("").to_lowercase();
+                if !p.ends_with(".ico") && !p.ends_with(".svg") {
+                    return Some(href.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 #[derive(serde::Serialize)]
 struct SavedLink {
     id: String,
@@ -991,6 +1038,18 @@ struct SavedLink {
     palette: Option<String>,
     created_at: u64,
     post_meta: String,
+}
+
+// Scraped page metadata — tweet (oEmbed) and generic (og:) branches both fill this.
+#[derive(Default)]
+struct LinkMeta {
+    title: Option<String>,
+    description: Option<String>,
+    site_name: Option<String>,
+    image_url: Option<String>,
+    video_url: Option<String>,
+    author_name: Option<String>,
+    icon_url: Option<String>,
 }
 
 #[tauri::command]
@@ -1033,7 +1092,7 @@ async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, Stri
     };
 
     // Fetch metadata
-    let (title, description, site_name, image_url, video_url, author_name) = if is_tweet {
+    let meta = if is_tweet {
         // Fetch oEmbed for author + caption (use base_url — oEmbed rejects /photo/N variants)
         let oembed_url = format!("https://publish.twitter.com/oembed?url={}&maxwidth=550&dnt=true", base_url);
         let (author, caption, oembed_thumb) = match client.get(&oembed_url).send().await {
@@ -1062,15 +1121,15 @@ async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, Stri
         }.await;
         // Only use og:image if it's not a profile pic (profile pics contain /profile_images/)
         let usable_og_image = tweet_og_image.filter(|u| !u.contains("/profile_images/"));
-        let image_url = usable_og_image.or(oembed_thumb);
-        (
-            author.as_deref().map(|a| format!("{} on X", a)),
-            Some(caption),
-            Some("X".to_string()),
-            image_url,
-            yt_video_url,
-            author,
-        )
+        LinkMeta {
+            title: author.as_deref().map(|a| format!("{} on X", a)),
+            description: Some(caption),
+            site_name: Some("X".to_string()),
+            image_url: usable_og_image.or(oembed_thumb),
+            video_url: yt_video_url,
+            author_name: author,
+            ..Default::default()
+        }
     } else {
         match client.get(&url).send().await {
             Ok(resp) => {
@@ -1123,11 +1182,17 @@ async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, Stri
                 }
                 let body = resp.text().await.unwrap_or_default();
                 let og = parse_og_tags(&body);
-                let resolved_img = og.image.map(|u| resolve_url(&u, &url));
-                let resolved_vid = og.video.map(|u| resolve_url(&u, &url));
-                (og.title, og.description, og.site_name, resolved_img, resolved_vid, None)
+                LinkMeta {
+                    title: og.title,
+                    description: og.description,
+                    site_name: og.site_name,
+                    image_url: og.image.map(|u| resolve_url(&u, &url)),
+                    video_url: og.video.map(|u| resolve_url(&u, &url)),
+                    icon_url: parse_touch_icon(&body).map(|u| resolve_url(&u, &url)),
+                    ..Default::default()
+                }
             }
-            Err(_) => (None, None, None, None, None, None),
+            Err(_) => LinkMeta::default(),
         }
     };
 
@@ -1149,7 +1214,7 @@ async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, Stri
     // Try video first (og:video), then image (og:image)
     let (file_path_str, thumb_path_str, width, height, dominant_color, palette) = 'outer: {
         // ── Video branch ────────────────────────────────────────────────────────
-        if let Some(ref vid_url) = video_url {
+        if let Some(ref vid_url) = meta.video_url {
             if let Some(bytes) = fetch_bytes(vid_url).await {
                 let ext = std::path::Path::new(vid_url.split('?').next().unwrap_or(vid_url))
                     .extension().and_then(|s| s.to_str()).filter(|s| !s.is_empty())
@@ -1176,8 +1241,8 @@ async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, Stri
             }
         }
 
-        // ── Image branch ────────────────────────────────────────────────────────
-        if let Some(ref img_url) = image_url {
+        // ── Image branch — og:image, then apple-touch-icon fallback ────────────
+        for img_url in meta.image_url.iter().chain(meta.icon_url.iter()) {
             if let Some(bytes) = fetch_bytes(img_url).await {
                 if let Ok(img) = image::load_from_memory(&bytes) {
                     let (w, h) = (img.width(), img.height());
@@ -1216,11 +1281,11 @@ async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, Stri
     let post_meta = serde_json::json!({
         "platform": if is_tweet { "twitter" } else { "web" },
         "url": url,
-        "title": title,
-        "description": description,
-        "siteName": site_name.or_else(|| Some(domain)),
-        "imageUrl": image_url,
-        "authorName": author_name,
+        "title": meta.title,
+        "description": meta.description,
+        "siteName": meta.site_name.or_else(|| Some(domain)),
+        "imageUrl": meta.image_url,
+        "authorName": meta.author_name,
     });
 
     Ok(SavedLink {
@@ -1234,6 +1299,33 @@ async fn save_link(app: tauri::AppHandle, url: String) -> Result<SavedLink, Stri
         created_at: now,
         post_meta: serde_json::to_string(&post_meta).unwrap_or_default(),
     })
+}
+
+#[tauri::command]
+fn set_clipboard_capture(enabled: bool) {
+    clipboard_watch::set_enabled(enabled);
+}
+
+// Frontend invokes this once its "external-save" listener is registered and the
+// initial load is done; inbox + clipboard ingest hold off until then so no emit
+// is ever fired into a webview that can't insert the row.
+#[tauri::command]
+fn set_frontend_ready() {
+    inbox::set_frontend_ready();
+}
+
+// Frontend acks an external-save once the row is in SQLite; only then does the
+// inbox delete the source files. Un-acked emits are retried, not lost.
+#[tauri::command]
+fn inbox_ack(id: String) {
+    inbox::ack(&id);
+}
+
+// For JS-side clipboard writes (navigator.clipboard) so capture mode doesn't
+// re-ingest KEEP's own copies.
+#[tauri::command]
+fn mark_clipboard_own_copy() {
+    clipboard_watch::mark_own_copy();
 }
 
 #[tauri::command]
@@ -1373,6 +1465,8 @@ pub fn run() {
                     let _ = app.emit("open-settings", ());
                 }
             })?;
+            inbox::start(app.handle().clone());
+            clipboard_watch::start(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1398,6 +1492,10 @@ pub fn run() {
             save_link,
             get_file_size,
             backfill_thumb_hashes,
+            set_clipboard_capture,
+            set_frontend_ready,
+            inbox_ack,
+            mark_clipboard_own_copy,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

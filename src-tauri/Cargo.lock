@@ -2631,6 +2631,7 @@ dependencies = [
  "image",
  "jxl-oxide",
  "libheif-rs",
+ "objc2",
  "reqwest 0.12.28",
  "scraper",
  "serde",
@@ -2643,7 +2644,9 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-sql",
  "thumbhash",
+ "tokio",
  "trash",
+ "url",
  "uuid",
 ]
 

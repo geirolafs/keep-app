@@ -2,6 +2,7 @@ import { createContext, createElement, use, useEffect, useState, useCallback } f
 import type { ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import Database from "@tauri-apps/plugin-sql";
 import { toast } from "@/lib/toast";
 import { sendNotification } from "@tauri-apps/plugin-notification";
@@ -95,6 +96,42 @@ export async function backfillVision(
 
 async function getDb() {
   return Database.load("sqlite:keep.db");
+}
+
+type Db = Awaited<ReturnType<typeof getDb>>;
+
+// Shared by in-app save paths and the external-save listener (inbox watcher,
+// clipboard capture). INSERT OR IGNORE + `inserted` keeps replayed events
+// idempotent while letting fresh saves detect a silently-failed insert.
+async function insertSavedImage(db: Db, saved: SavedImageResult, sourceUrl: string | null, title: string | null): Promise<{ row: Image; inserted: boolean }> {
+  const res = await db.execute(
+    `INSERT OR IGNORE INTO images (id, file_path, thumb_path, source_url, title, width, height, dominant_color, palette, created_at, updated_at, kind, thumb_hash)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, $11, $12)`,
+    [saved.id, saved.file_path, saved.thumb_path, sourceUrl, title, saved.width, saved.height, saved.dominant_color, saved.palette, saved.created_at, saved.kind, saved.thumb_hash ?? null]
+  );
+  const inserted = res.rowsAffected > 0;
+  if (inserted) await insertVisionData(db, saved.id, saved.vision_tags, saved.ocr_text);
+  const row: Image = { ...saved, source_url: sourceUrl, title, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null, post_meta: null, thumb_hash: saved.thumb_hash ?? null };
+  return { row, inserted };
+}
+
+async function insertSavedLink(db: Db, saved: SavedLinkResult, url: string): Promise<{ row: Image; inserted: boolean }> {
+  const res = await db.execute(
+    `INSERT OR IGNORE INTO images (id, file_path, thumb_path, source_url, width, height, dominant_color, palette, created_at, updated_at, kind, post_meta)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, 'link', $10)`,
+    [saved.id, saved.file_path, saved.thumb_path, url, saved.width, saved.height, saved.dominant_color, saved.palette, saved.created_at, saved.post_meta]
+  );
+  let title: string | null = null;
+  try { title = JSON.parse(saved.post_meta)?.title ?? null; } catch {}
+  const row: Image = { ...saved, source_url: url, title, notes: null, description: null, ocr_text: null, deleted_at: null, kind: "link", post_meta: saved.post_meta, thumb_hash: null };
+  return { row, inserted: res.rowsAffected > 0 };
+}
+
+interface ExternalSavePayload {
+  capture: "image" | "screenshot" | "link";
+  saved: SavedImageResult | SavedLinkResult;
+  source_url: string | null;
+  title: string | null;
 }
 
 export async function devResetAll() {
@@ -278,17 +315,9 @@ function useImagesState() {
       console.log("[keep] saved:", saved);
 
       const db = await getDb();
-      await db.execute(
-        `INSERT INTO images (id, file_path, thumb_path, width, height, dominant_color, palette, created_at, updated_at, kind, thumb_hash)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10)`,
-        [saved.id, saved.file_path, saved.thumb_path, saved.width, saved.height, saved.dominant_color, saved.palette, saved.created_at, saved.kind, saved.thumb_hash ?? null]
-      );
-      await insertVisionData(db, saved.id, saved.vision_tags, saved.ocr_text);
-
-      setImages((prev) => [
-        { ...saved, source_url: null, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null, post_meta: null, thumb_hash: saved.thumb_hash ?? null },
-        ...prev,
-      ]);
+      const { row, inserted } = await insertSavedImage(db, saved, null, null);
+      if (!inserted) throw new Error("database insert was ignored");
+      setImages((prev) => [row, ...prev]);
     } catch (err) {
       console.error("[keep] saveBlob failed:", err);
       toast.error("Failed to save image");
@@ -308,17 +337,9 @@ function useImagesState() {
       console.log("[keep] savePath saved:", saved);
 
       const db = await getDb();
-      await db.execute(
-        `INSERT INTO images (id, file_path, thumb_path, width, height, dominant_color, palette, created_at, updated_at, kind, thumb_hash)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10)`,
-        [saved.id, saved.file_path, saved.thumb_path, saved.width, saved.height, saved.dominant_color, saved.palette, saved.created_at, saved.kind, saved.thumb_hash ?? null]
-      );
-      await insertVisionData(db, saved.id, saved.vision_tags, saved.ocr_text);
-
-      setImages((prev) => [
-        { ...saved, source_url: null, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null, post_meta: null, thumb_hash: saved.thumb_hash ?? null },
-        ...prev,
-      ]);
+      const { row, inserted } = await insertSavedImage(db, saved, null, null);
+      if (!inserted) throw new Error("database insert was ignored");
+      setImages((prev) => [row, ...prev]);
     } catch (err) {
       console.error("[keep] savePath failed:", err);
       toast.error("Failed to save image");
@@ -338,17 +359,9 @@ function useImagesState() {
       console.log("[keep] saveUrl saved:", saved);
 
       const db = await getDb();
-      await db.execute(
-        `INSERT INTO images (id, file_path, thumb_path, source_url, width, height, dominant_color, palette, created_at, updated_at, kind, thumb_hash)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11)`,
-        [saved.id, saved.file_path, saved.thumb_path, url, saved.width, saved.height, saved.dominant_color, saved.palette, saved.created_at, saved.kind, saved.thumb_hash ?? null]
-      );
-      await insertVisionData(db, saved.id, saved.vision_tags, saved.ocr_text);
-
-      setImages((prev) => [
-        { ...saved, source_url: url, title: null, notes: null, description: null, ocr_text: saved.ocr_text || null, deleted_at: null, post_meta: null, thumb_hash: saved.thumb_hash ?? null },
-        ...prev,
-      ]);
+      const { row, inserted } = await insertSavedImage(db, saved, url, null);
+      if (!inserted) throw new Error("database insert was ignored");
+      setImages((prev) => [row, ...prev]);
     } catch (err) {
       console.error("[keep] saveUrl failed:", err);
       toast.error("Failed to save image");
@@ -363,17 +376,9 @@ function useImagesState() {
     try {
       const saved = await invoke<SavedLinkResult>("save_link", { url });
       const db = await getDb();
-      await db.execute(
-        `INSERT INTO images (id, file_path, thumb_path, source_url, width, height, dominant_color, palette, created_at, updated_at, kind, post_meta)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, 'link', $10)`,
-        [saved.id, saved.file_path, saved.thumb_path, url, saved.width, saved.height, saved.dominant_color, saved.palette, saved.created_at, saved.post_meta]
-      );
-      let title: string | null = null;
-      try { title = JSON.parse(saved.post_meta)?.title ?? null; } catch {}
-      setImages((prev) => [
-        { ...saved, source_url: url, title, notes: null, description: null, ocr_text: null, deleted_at: null, kind: "link", post_meta: saved.post_meta, thumb_hash: null },
-        ...prev,
-      ]);
+      const { row, inserted } = await insertSavedLink(db, saved, url);
+      if (!inserted) throw new Error("database insert was ignored");
+      setImages((prev) => [row, ...prev]);
     } catch (err) {
       console.error("[keep] saveLink failed:", err);
       const msg = typeof err === "string" ? err : "Failed to save link";
@@ -637,8 +642,47 @@ function useImagesState() {
     return () => window.removeEventListener("paste", handler);
   }, [saveBlob, saveUrl, saveLink]);
 
+  // external saves — Rust inbox watcher / clipboard capture emit "external-save".
+  // Order matters: load first (so prepends can't be clobbered by load's setImages),
+  // then register the listener, then tell Rust it may start ingesting. Each event
+  // is acked (inbox_ack) once the row is in SQLite — only then does the inbox
+  // delete its source files; un-acked emits are replayed (INSERT OR IGNORE dedups).
   useEffect(() => {
-    load();
+    let mounted = true;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      await load();
+      try {
+        const un = await listen<ExternalSavePayload>("external-save", async (e) => {
+          const { capture, saved, source_url, title } = e.payload;
+          try {
+            const db = await getDb();
+            const { row, inserted } = capture === "link"
+              ? await insertSavedLink(db, saved as SavedLinkResult, source_url ?? "")
+              : await insertSavedImage(db, saved as SavedImageResult, source_url, title);
+            invoke("inbox_ack", { id: row.id }).catch(() => {});
+            if (!inserted) return; // replayed event — row already there
+            setImages((prev) => (prev.some((p) => p.id === row.id) ? prev : [row, ...prev]));
+          } catch (err) {
+            console.error("[keep] external-save failed:", err);
+            // keyed by save id — replays of the same failed emit update one toast
+            toast.error("Failed to save captured item", { id: `external-save-${saved.id}` });
+          }
+        });
+        if (!mounted) {
+          un();
+          return;
+        }
+        unlisten = un;
+        await invoke("set_frontend_ready");
+      } catch {
+        // browser preview mode — no Tauri event system
+      }
+    })();
+    return () => {
+      mounted = false;
+      unlisten?.();
+    };
   }, [load]);
 
   return {

@@ -862,6 +862,7 @@ export function Lightbox({
                     <button
                       type="button"
                       onClick={() => {
+                        invoke("mark_clipboard_own_copy").catch(() => {});
                         navigator.clipboard.writeText(promptValue);
                         toast.success("Prompt copied", { duration: 1500 });
                       }}
@@ -887,6 +888,7 @@ export function Lightbox({
                   type="button"
                   key={color}
                   onClick={() => {
+                    invoke("mark_clipboard_own_copy").catch(() => {});
                     navigator.clipboard.writeText(color);
                     toast.success(`Copied ${color}`, { duration: 1500 });
                   }}
