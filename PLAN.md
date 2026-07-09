@@ -225,7 +225,7 @@ Replaces `analyze_image` (title + tags + description) with a fully local pipelin
 - [x] Grid: platform badge overlay on link cards (bird icon for Twitter, domain text for others); falls back to `source_url` if `post_meta` missing
 - [x] Dev snapshot (`devSaveExample` / `devLoadExample`): includes `post_meta`; excludes soft-deleted items
 
-#### AI Semantic Search
+#### AI Semantic Search (deferred to ~v1.5 — see Roadmap)
 - [ ] Add `sqlite-vec` extension for local vector embeddings (no API calls at query time)
 - [ ] Generate embedding on image save/analyze — store in `embeddings` table
 - [ ] Hybrid search: keyword match (existing) + cosine similarity on embeddings
@@ -233,15 +233,15 @@ Replaces `analyze_image` (title + tags + description) with a fully local pipelin
 
 ---
 
-### Pre-Phase 8 Priorities
+### Roadmap (decided 2026-07-09)
 
-Before adding more features, harden what exists:
+Order to v1 and beyond — features only ship on top of a 100%-working core:
 
-1. **Capture & retrieval first** — make save/search bulletproof before new sources
-2. **Docs** — license, CONTRIBUTING, roadmap, known limitations
-3. **Tauri security** — tighten CSP, capability allowlists, IPC surface
-4. **Scale testing** — import/search perf with 5 k–20 k items; identify bottlenecks
-5. **Then** browser extension + Spaces (Phase 8 / 9)
+1. **Phase 8 remainder** — social features (X bookmark watcher, save-post extraction, Bookmarks tab, PostCard completion)
+2. **Finessing** — hardening + polish pass: save/search bulletproof, Tauri security (CSP, capabilities, IPC surface), scale testing (5k–20k items), docs (license, roadmap, known limitations)
+3. **Distribution → v1.0** — signed/notarized .app, dylib bundling, extension distribution
+4. **~v1.5** — AI semantic search (sqlite-vec)
+5. **~v2** — Phase 9 Canvas/Spaces — a "maybe" feature; only once everything above works 100%
 
 ---
 
@@ -292,7 +292,7 @@ ALTER TABLE images ADD COLUMN post_meta TEXT;
 
 ---
 
-### Phase 9 — Canvas (Spaces)
+### Phase 9 — Canvas (Spaces) — deferred to ~v2, "maybe" feature (see Roadmap)
 
 Infinite canvas for arranging saved images into mood boards. GatherOS calls this "Spaces" and implements it as a **custom SVG canvas in React** — no heavy library needed.
 

@@ -41,7 +41,8 @@ Phase 7 remaining — see PLAN.md:
 - [x] Shared ingest: Rust emits `external-save` → `use-images.ts` listener inserts via `insertSavedImage`/`insertSavedLink` helpers (also used by paste/drag; INSERT OR IGNORE)
 - [x] Extension: right-click save image/video/link/page, toolbar click + ⌘⇧S save page, screenshots visible + region (OffscreenCanvas crop), badge ✓/! feedback
 - [ ] X bookmark watcher, save-post DOM extraction, full-page screenshot, Firefox (see PLAN.md)
-Phase 9 — Canvas/Spaces — custom SVG infinite canvas, `boards` + `board_items` tables, drag from library onto canvas. GatherOS reference: SVG-rendered, no Fabric.js/Konva, simple x/y/rotation/z_index schema.
+
+**Roadmap (2026-07-09):** Phase 8 remainder → finessing/hardening → distribution = **v1.0**; AI semantic search = **~v1.5**; Phase 9 Canvas/Spaces = **~v2**, "maybe" feature (custom SVG infinite canvas, `boards` + `board_items` tables — see PLAN.md).
 
 ---
 
