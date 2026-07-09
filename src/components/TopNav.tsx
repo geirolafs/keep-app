@@ -44,7 +44,7 @@ import { type AnalyzeMode, useSettings } from "@/hooks/use-settings";
 import { useTags } from "@/hooks/use-tags";
 import { toast } from "@/lib/toast";
 
-export type Tab = "all" | "collections" | "tags" | "bin";
+export type Tab = "all" | "collections" | "tags" | "bookmarks" | "bin";
 export type Sort = "newest" | "oldest" | "name-az" | "name-za";
 
 export interface TopNavHandle {
@@ -153,6 +153,8 @@ const TABS: { id: Tab; label: string }[] = [
 	{ id: "all", label: "All" },
 	{ id: "collections", label: "Collections" },
 	{ id: "tags", label: "Tags" },
+	// PROTOTYPE — wayfinder ticket #3
+	{ id: "bookmarks", label: "Bookmarks" },
 	{ id: "bin", label: "Bin" },
 ];
 

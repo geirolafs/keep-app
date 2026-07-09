@@ -6,7 +6,6 @@ import {
 	RiImageAddLine,
 	RiLoader4Line,
 	RiPriceTag2Line,
-	RiTwitterLine,
 	RiUploadLine,
 } from "@remixicon/react";
 import { invoke } from "@tauri-apps/api/core";
@@ -44,6 +43,8 @@ import { BinView } from "@/components/BinView";
 import type { LazyIO } from "@/components/LazyImage";
 import { LazyImage, LazyObserverContext } from "@/components/LazyImage";
 import { Lightbox } from "@/components/Lightbox";
+// PROTOTYPE — wayfinder ticket #3
+import { PrototypePostCard, PrototypeSwitcher } from "@/components/PrototypePostCards";
 import type { Sort, Tab } from "@/components/TopNav";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { type PendingItem, useImages } from "@/hooks/use-images";
@@ -478,7 +479,10 @@ export default function Grid({
 	const filteredImages = (() => {
 		let imgs = [...allImages];
 
-		if (activeTab === "collections" && selectedId) {
+		if (activeTab === "bookmarks") {
+			// PROTOTYPE — wayfinder ticket #3
+			imgs = imgs.filter((img) => img.kind === "post" || img.kind === "link");
+		} else if (activeTab === "collections" && selectedId) {
 			const ids = getCollectionImageIds(selectedId);
 			imgs = imgs.filter((img) => ids.has(img.id));
 		} else if (activeTab === "tags" && selectedId) {
@@ -1071,6 +1075,8 @@ export default function Grid({
 				);
 			}
 			const img = item;
+			// PROTOTYPE — wayfinder ticket #3: post/link cards render via variant prototype
+			const isBookmarkCard = img.kind === "post" || img.kind === "link";
 			return (
 				<button
 					type="button"
@@ -1092,6 +1098,10 @@ export default function Grid({
 						}
 					}}
 				>
+					{isBookmarkCard ? (
+						<PrototypePostCard image={img} imgSrc={imgSrc} />
+					) : (
+					<>
 					<div className="motion-safe:transition-transform motion-safe:duration-[200ms] motion-safe:ease-out motion-safe:group-hover:scale-[1.01]">
 						{img.kind === "video" ? (
 							<video
@@ -1129,55 +1139,17 @@ export default function Grid({
 							/>
 						)}
 					</div>
-					{img.kind === "link" ? (
-						(() => {
-							let platform = "";
-							let domain = "";
-							try {
-								const meta = JSON.parse(img.post_meta ?? "{}") as {
-									platform?: string;
-									siteName?: string;
-									url?: string;
-								};
-								platform = meta.platform ?? "";
-								domain =
-									meta.siteName ??
-									meta.url?.split("://")[1]?.split("/")[0] ??
-									"";
-							} catch {}
-							// Fall back to source_url if post_meta missing
-							if (!domain && img.source_url) {
-								domain = img.source_url.split("://")[1]?.split("/")[0] ?? "";
-							}
-							if (
-								!platform &&
-								img.source_url &&
-								/x\.com|twitter\.com/.test(img.source_url)
-							) {
-								platform = "twitter";
-							}
-							return (
-								<div className="absolute bottom-0 left-0 right-0 flex items-end px-2 pb-2 pt-8 bg-gradient-to-t from-black/40 to-transparent">
-									<span className="rounded-full bg-white/80 px-1.5 py-0.5 text-[10px] text-black font-medium max-w-full truncate flex items-center gap-1">
-										{platform === "twitter" ? (
-											<RiTwitterLine className="size-3 shrink-0" />
-										) : null}
-										{platform !== "twitter" && domain ? domain : null}
-									</span>
-								</div>
-							);
-						})()
-					) : (
-						<div className="absolute bottom-0 left-0 right-0 flex flex-wrap gap-1 pt-16 px-2 pb-2 bg-gradient-to-t from-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-[120ms] ease-out">
-							{(imageTagsMap.get(img.id) ?? []).slice(0, 3).map((t) => (
-								<span
-									key={t.id}
-									className="rounded-full bg-white/80 px-1.5 py-0.5 text-[10px] text-black font-medium"
-								>
-									{t.name}
-								</span>
-							))}
-						</div>
+					<div className="absolute bottom-0 left-0 right-0 flex flex-wrap gap-1 pt-16 px-2 pb-2 bg-gradient-to-t from-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-[120ms] ease-out">
+						{(imageTagsMap.get(img.id) ?? []).slice(0, 3).map((t) => (
+							<span
+								key={t.id}
+								className="rounded-full bg-white/80 px-1.5 py-0.5 text-[10px] text-black font-medium"
+							>
+								{t.name}
+							</span>
+						))}
+					</div>
+					</>
 					)}
 					{selectedIds.size > 0 && (
 						<div
@@ -1371,6 +1343,9 @@ export default function Grid({
 				imgSrc={imgSrc}
 				onOpenSettings={onOpenSettings}
 			/>
+
+			{/* PROTOTYPE — wayfinder ticket #3 */}
+			<PrototypeSwitcher />
 
 			<ConfirmDialog
 				open={confirmDelete !== null}
