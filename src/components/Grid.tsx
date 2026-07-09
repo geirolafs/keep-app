@@ -336,11 +336,12 @@ interface GridProps {
 
 const EMPTY_TAGS: { id: string; name: string }[] = [];
 
-// Cards per memoized chunk. Memoized cards alone still leave React walking
-// every mounted element on each +50 bump (O(loaded) diff — 300–500ms at 18k).
-// Chunking gives unchanged runs a stable array identity so the diff touches
-// only the chunk list + the tail chunk: O(loaded/CHUNK + CHUNK).
-const CHUNK_SIZE = 200;
+// Windowed masonry constants (ticket #18 escalation): column gap in px
+// (matches gap-1), scroll re-render granularity, and how far beyond the
+// viewport cards stay mounted.
+const GAP = 4;
+const SCROLL_BUCKET = 300;
+const OVERSCAN = 1500;
 
 // Memoized masonry card (ticket #18): the +50 windowing bump appends new cards
 // while existing ones keep identical props and skip reconciliation — per-bump
@@ -449,56 +450,6 @@ const MasonryCard = memo(function MasonryCard({
 	);
 });
 
-// A run of cards with stable array identity across bumps — memo makes React
-// skip the whole run when nothing in it changed.
-interface MasonryChunkProps {
-	items: (PendingItem | Image)[];
-	getTags: (id: string) => { id: string; name: string }[];
-	selectedIds: Set<string>;
-	selectionMode: boolean;
-	imgSrc: (path: string) => string;
-	onCardClick: (id: string, modifier: boolean) => void;
-}
-
-const MasonryChunk = memo(function MasonryChunk({
-	items,
-	getTags,
-	selectedIds,
-	selectionMode,
-	imgSrc,
-	onCardClick,
-}: MasonryChunkProps) {
-	return (
-		<>
-			{items.map((item) =>
-				"file_path" in item ? (
-					<MasonryCard
-						key={item.id}
-						img={item}
-						tags={getTags(item.id)}
-						selected={selectedIds.has(item.id)}
-						selectionMode={selectionMode}
-						imgSrc={imgSrc}
-						onCardClick={onCardClick}
-					/>
-				) : (
-					<div
-						key={item.id}
-						className="relative overflow-hidden rounded-sm bg-muted motion-safe:animate-pulse w-full aspect-square"
-					>
-						<div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-3">
-							<RiLoader4Line className="size-5 text-muted-foreground motion-safe:animate-spin" />
-							<span className="text-xs text-muted-foreground text-center line-clamp-2 leading-tight">
-								{item.label}
-							</span>
-						</div>
-					</div>
-				),
-			)}
-		</>
-	);
-});
-
 export default function Grid({
 	activeTab = "all",
 	sort = "newest",
@@ -549,8 +500,12 @@ export default function Grid({
 	} = gridUI;
 	const renameInputRef = useRef<HTMLInputElement>(null);
 	const tagHoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-	const [visibleCount, setVisibleCount] = useState(100);
-	const sentinelRef = useRef<HTMLDivElement>(null);
+	// Windowed masonry geometry (ticket #18 escalation) — see the layout memo.
+	const [containerW, setContainerW] = useState(0);
+	const [viewH, setViewH] = useState(800);
+	const [scrollBucket, setScrollBucket] = useState(0);
+	const heightCacheRef = useRef(new Map<string, number>());
+	const [measureTick, setMeasureTick] = useState(0);
 	const activeScrollRef = useRef<HTMLDivElement | null>(null);
 	// useState (not useRef) so the LazyObserverContext.Provider re-renders when the
 	// masonry div mounts and we have a real root for the shared IntersectionObserver.
@@ -559,8 +514,10 @@ export default function Grid({
 	useEffect(() => {
 		if (!masonryEl) return;
 		const ro = new ResizeObserver(([entry]) => {
-			if (numColsManual) return;
 			const w = entry.contentRect.width;
+			setContainerW(w);
+			setViewH(masonryEl.clientHeight);
+			if (numColsManual) return;
 			const n = w >= 1280 ? 5 : w >= 1024 ? 4 : w >= 640 ? 3 : 2;
 			onAutoNumCols?.(n);
 		});
@@ -625,9 +582,18 @@ export default function Grid({
 	}, [masonryEl]);
 	const shuffleOrderRef = useRef<Map<string, number> | null>(null);
 	const prevShuffleSeedRef = useRef<number>(0);
-	useEffect(() => {
+
+	// Deferred so a keystroke never pays the full grid relayout synchronously —
+	// keeps the input responsive at 20k items (ticket #18).
+	const deferredQuery = useDeferredValue(searchQuery);
+
+	// Compute filtered + sorted images. Memoized: the windowed layout memo below
+	// keys on this array's identity, so it must be stable across unrelated renders.
+	const filteredImages = useMemo(() => {
+		// Full re-shuffle when seed changes; preserve positions for new-image
+		// additions. Computed here (not an effect) so the same render that sees a
+		// new seed also sorts by it.
 		if (shuffleSeed > 0) {
-			// Full re-shuffle when seed changes; preserve positions for new-image additions.
 			const seedChanged = shuffleSeed !== prevShuffleSeedRef.current;
 			prevShuffleSeedRef.current = shuffleSeed;
 			const existing = seedChanged ? new Map<string, number>() : (shuffleOrderRef.current ?? new Map<string, number>());
@@ -640,15 +606,7 @@ export default function Grid({
 			prevShuffleSeedRef.current = 0;
 			shuffleOrderRef.current = null;
 		}
-	}, [shuffleSeed, allImages]); // eslint-disable-line react-hooks/exhaustive-deps
 
-	// Deferred so a keystroke never pays the grid teardown synchronously — at
-	// deep scroll the reset to visibleCount=50 tears down thousands of cards
-	// (866ms measured at 20k); deferring keeps the input responsive (ticket #18).
-	const deferredQuery = useDeferredValue(searchQuery);
-
-	// Compute filtered + sorted images
-	const filteredImages = (() => {
 		let imgs = [...allImages];
 
 		if (activeTab === "bookmarks") {
@@ -700,7 +658,8 @@ export default function Grid({
 		}
 
 		return imgs;
-	})();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [allImages, activeTab, selectedId, deferredQuery, sort, shuffleSeed, imageTagsMap, getCollectionImageIds]);
 
 	const currentIndex = openId
 		? filteredImages.findIndex((i) => i.id === openId)
@@ -712,27 +671,18 @@ export default function Grid({
 	if (prevSync.tab !== activeTab) {
 		setPrevSync({ tab: activeTab, filterKey });
 		dispatch({ type: "tabChanged" });
-		setVisibleCount(50);
 	} else if (prevSync.filterKey !== filterKey) {
 		setPrevSync({ tab: activeTab, filterKey });
-		setVisibleCount(50);
 	}
+	// Filter/sort change: jump back to the top so the windowed range is valid.
+	useEffect(() => {
+		if (masonryEl) masonryEl.scrollTop = 0;
+		setScrollBucket(0);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [filterKey]);
 
-	// Sentinel: window in more cards as the user nears the bottom (ticket #18).
-	// No IntersectionObserver — its edge-triggered events get coalesced away when
-	// a scroll and the resulting +50 append land in the same frame (sentinel goes
-	// out→in→out with no net change), permanently stalling the load. Instead:
-	// a direct geometry check on rAF-throttled scroll events, plus a post-bump
-	// chain so short content keeps filling without any scrolling.
-	const filteredLenRef = useRef(0);
-	filteredLenRef.current = filteredImages.length;
-	const trySentinelBump = useCallback((root: HTMLElement) => {
-		const el = sentinelRef.current;
-		if (!el) return;
-		if (el.getBoundingClientRect().top <= root.getBoundingClientRect().bottom + 600) {
-			setVisibleCount((n) => (n < filteredLenRef.current ? n + 50 : n));
-		}
-	}, []);
+	// Scroll-driven windowing: track scrollTop in coarse buckets so the visible
+	// range re-renders only when it moves meaningfully, not per scroll pixel.
 	useEffect(() => {
 		const root = masonryEl;
 		if (!root) return;
@@ -742,19 +692,12 @@ export default function Grid({
 			ticking = true;
 			requestAnimationFrame(() => {
 				ticking = false;
-				trySentinelBump(root);
+				setScrollBucket(Math.floor(root.scrollTop / SCROLL_BUCKET));
 			});
 		};
 		root.addEventListener("scroll", onScroll, { passive: true });
 		return () => root.removeEventListener("scroll", onScroll);
-	}, [masonryEl, trySentinelBump]);
-	useEffect(() => {
-		const root = masonryEl;
-		if (!root || visibleCount >= filteredImages.length) return;
-		// rAF so the next bump lands after this one paints — chain, don't block
-		const raf = requestAnimationFrame(() => trySentinelBump(root));
-		return () => cancelAnimationFrame(raf);
-	}, [visibleCount, filteredImages.length, masonryEl, trySentinelBump]);
+	}, [masonryEl]);
 
 	// Tauri drag-drop listener
 	useEffect(() => {
@@ -858,9 +801,62 @@ export default function Grid({
 		(id: string) => imageTagsMap.get(id) ?? EMPTY_TAGS,
 		[imageTagsMap],
 	);
-	// Chunk identity cache — a chunk whose contents are unchanged keeps its
-	// previous array reference so MasonryChunk's memo can skip it.
-	const chunkCacheRef = useRef(new Map<string, (PendingItem | Image)[]>());
+	// ── Windowed absolute-position masonry (ticket #18 escalation) ────────────
+	// WKWebView can't be trusted to repaint giant flex columns when scrolling up:
+	// paint tiles above the viewport get evicted and only refill on downward
+	// scroll, leaving white gaps. So the masonry lays itself out from stored
+	// image dimensions and mounts only the cards near the viewport — visibility
+	// is math on scrollTop, not paint heuristics, identical in both directions.
+	const layout = useMemo(() => {
+		void measureTick; // measurement corrections (post cards) invalidate layout
+		const items: { item: PendingItem | Image; x: number; y: number; w: number; h: number }[] = [];
+		if (containerW <= 0 || numCols < 1) return { items, height: 0 };
+		const colW = (containerW - GAP * (numCols - 1)) / numCols;
+		const colHeights = new Array(numCols).fill(0);
+		const all: (PendingItem | Image)[] = [...pendingItems, ...filteredImages];
+		const estimate = (item: PendingItem | Image): number => {
+			if (!("file_path" in item)) return colW; // pending ghost: aspect-square
+			const cached = heightCacheRef.current.get(`${item.id}@${Math.round(colW)}`);
+			if (cached) return cached;
+			const imgH = item.width > 0 && item.height > 0 ? (colW * item.height) / item.width : 0;
+			if (item.kind === "post" || item.kind === "link") return (imgH || 0) + 96; // + meta text; corrected by measureCard
+			return imgH > 0 ? imgH : colW; // SVG/unknown dims: square
+		};
+		all.forEach((item, i) => {
+			const c = i % numCols;
+			const h = estimate(item);
+			items.push({ item, x: c * (colW + GAP), y: colHeights[c], w: colW, h });
+			colHeights[c] += h + GAP;
+		});
+		return { items, height: Math.max(0, ...colHeights) };
+	}, [filteredImages, pendingItems, numCols, containerW, measureTick]);
+
+	// Post/link cards contain text whose height can't be computed up front —
+	// measure once mounted and correct the layout, batched to one relayout/frame.
+	const pendingMeasuresRef = useRef(new Map<string, number>());
+	const measureFlushRef = useRef(0);
+	const measureCard = useCallback((id: string, colW: number, el: HTMLDivElement | null) => {
+		if (!el) return;
+		const h = el.offsetHeight;
+		const key = `${id}@${Math.round(colW)}`;
+		if (h > 0 && Math.abs((heightCacheRef.current.get(key) ?? -Infinity) - h) > 1) {
+			pendingMeasuresRef.current.set(key, h);
+			if (!measureFlushRef.current) {
+				measureFlushRef.current = requestAnimationFrame(() => {
+					measureFlushRef.current = 0;
+					let changed = false;
+					for (const [k, v] of pendingMeasuresRef.current) {
+						if (heightCacheRef.current.get(k) !== v) {
+							heightCacheRef.current.set(k, v);
+							changed = true;
+						}
+					}
+					pendingMeasuresRef.current.clear();
+					if (changed) setMeasureTick((t) => t + 1);
+				});
+			}
+		}
+	}, []);
 
 	const handleBatchDelete = useCallback(() => {
 		if (selectedIds.size === 0) return;
@@ -1257,62 +1253,57 @@ export default function Grid({
 			);
 		}
 
-		const visibleImages = filteredImages.slice(0, visibleCount);
-		const allDisplayItems: (PendingItem | (typeof visibleImages)[0])[] = [
-			...pendingItems,
-			...visibleImages,
-		];
-
-		// Round-robin distribution so reading order (left→right) matches item order
-		const cols = Array.from(
-			{ length: numCols },
-			(): typeof allDisplayItems => [],
-		);
-		allDisplayItems.forEach((item, i) => cols[i % numCols].push(item));
-
-		// Split each column into fixed-size chunks, reusing the previous array
-		// reference when a chunk's contents are identical — on a +50 bump only
-		// the tail chunk changes, so React's diff is O(chunks + tail).
-		const chunksFor = (col: typeof allDisplayItems, colIdx: number) => {
-			const out: (typeof allDisplayItems)[] = [];
-			for (let i = 0; i < col.length; i += CHUNK_SIZE) {
-				const slice = col.slice(i, i + CHUNK_SIZE);
-				const key = `${colIdx}:${i}`;
-				const prev = chunkCacheRef.current.get(key);
-				if (prev && prev.length === slice.length && prev.every((v, j) => v === slice[j])) {
-					out.push(prev);
-				} else {
-					chunkCacheRef.current.set(key, slice);
-					out.push(slice);
-				}
-			}
-			return out;
-		};
+		// Only cards near the viewport are mounted; the relative wrapper carries
+		// the full computed height so the scrollbar stays truthful.
+		const viewTop = scrollBucket * SCROLL_BUCKET;
+		const rangeTop = viewTop - OVERSCAN;
+		const rangeBottom = viewTop + viewH + OVERSCAN;
+		const visible = layout.items.filter((li) => li.y + li.h >= rangeTop && li.y <= rangeBottom);
 		const selectionMode = selectedIds.size > 0;
 
 		return (
 			<div key={`masonry-${activeTab}`} ref={(el) => { setMasonryEl(el); activeScrollRef.current = el; setActiveScrollEl(el); }} className="flex-1 overflow-y-auto px-4 pb-4" style={{ paddingTop: navHeight + 16 }}>
 				<LazyObserverContext.Provider value={lazyIO}>
-					<div className="flex gap-1 items-start">
-						{cols.map((col, colIdx) => (
-							<div key={colIdx} className="flex flex-1 flex-col gap-1 min-w-0">
-								{chunksFor(col, colIdx).map((chunk, chunkIdx) => (
-									<MasonryChunk
-										key={chunkIdx}
-										items={chunk}
-										getTags={getTags}
-										selectedIds={selectedIds}
+					<div className="relative w-full" style={{ height: layout.height }}>
+						{visible.map(({ item, x, y, w }) =>
+							"file_path" in item ? (
+								<div
+									key={item.id}
+									className="absolute top-0 left-0"
+									style={{ transform: `translate(${x}px, ${y}px)`, width: w }}
+									ref={
+										item.kind === "post" || item.kind === "link"
+											? (el) => measureCard(item.id, w, el)
+											: undefined
+									}
+								>
+									<MasonryCard
+										img={item}
+										tags={getTags(item.id)}
+										selected={selectedIds.has(item.id)}
 										selectionMode={selectionMode}
 										imgSrc={imgSrc}
 										onCardClick={onCardClick}
 									/>
-								))}
-							</div>
-						))}
+								</div>
+							) : (
+								<div
+									key={item.id}
+									className="absolute top-0 left-0"
+									style={{ transform: `translate(${x}px, ${y}px)`, width: w }}
+								>
+									<div className="relative overflow-hidden rounded-sm bg-muted motion-safe:animate-pulse w-full aspect-square">
+										<div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-3">
+											<RiLoader4Line className="size-5 text-muted-foreground motion-safe:animate-spin" />
+											<span className="text-xs text-muted-foreground text-center line-clamp-2 leading-tight">
+												{item.label}
+											</span>
+										</div>
+									</div>
+								</div>
+							),
+						)}
 					</div>
-					{visibleCount < filteredImages.length && (
-						<div ref={sentinelRef} className="h-1" />
-					)}
 				</LazyObserverContext.Provider>
 			</div>
 		);
