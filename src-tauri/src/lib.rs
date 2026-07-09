@@ -64,8 +64,14 @@ fn run_vision(thumb_path: &str) -> (Vec<String>, String) {
         Some(d) => d,
         None => return (vec![], String::new()),
     };
-    let binary_name = format!("keep-vision-{}-apple-darwin", std::env::consts::ARCH);
-    let binary = dir.join(&binary_name);
+    // The bundler strips the target-triple suffix when copying externalBin next
+    // to the exe (bundle AND dev target dirs) — bare name first, suffixed fallback.
+    let binary = dir.join("keep-vision");
+    let binary = if binary.exists() {
+        binary
+    } else {
+        dir.join(format!("keep-vision-{}-apple-darwin", std::env::consts::ARCH))
+    };
     if !binary.exists() {
         return (vec![], String::new());
     }
@@ -430,10 +436,28 @@ async fn save_image_from_url(app: tauri::AppHandle, url: String) -> Result<Saved
     process_and_save(&app, &bytes, &ext, Some(url)).await
 }
 
+// Defense in depth for IPC commands that receive paths from the webview: the
+// path must resolve inside the app data dir or the command refuses. Closes the
+// arbitrary read/write/delete class if an XSS ever reaches the IPC layer.
+fn ensure_in_app_data(app: &tauri::AppHandle, path: &str) -> Result<std::path::PathBuf, String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let base = base.canonicalize().unwrap_or(base);
+    let canon = std::path::Path::new(path).canonicalize().map_err(|e| e.to_string())?;
+    if canon.starts_with(&base) {
+        Ok(canon)
+    } else {
+        Err(format!("path outside app data: {path}"))
+    }
+}
+
 #[tauri::command]
-async fn delete_image_files(file_path: String, thumb_path: String) -> Result<(), String> {
-    let _ = std::fs::remove_file(&file_path);
-    let _ = std::fs::remove_file(&thumb_path);
+async fn delete_image_files(app: tauri::AppHandle, file_path: String, thumb_path: String) -> Result<(), String> {
+    if let Ok(p) = ensure_in_app_data(&app, &file_path) {
+        let _ = std::fs::remove_file(p);
+    }
+    if let Ok(p) = ensure_in_app_data(&app, &thumb_path) {
+        let _ = std::fs::remove_file(p);
+    }
     Ok(())
 }
 
@@ -453,18 +477,20 @@ struct RefreshItem {
 }
 
 #[tauri::command]
-async fn refresh_thumbnails(items: Vec<RefreshItem>) -> Result<u32, String> {
+async fn refresh_thumbnails(app: tauri::AppHandle, items: Vec<RefreshItem>) -> Result<u32, String> {
     let mut count = 0u32;
     for item in &items {
         if item.kind == "video" || item.thumb_path == item.file_path {
             continue;
         }
-        let ext = std::path::Path::new(&item.file_path)
+        let Ok(file_path) = ensure_in_app_data(&app, &item.file_path) else { continue };
+        let Ok(thumb_path) = ensure_in_app_data(&app, &item.thumb_path) else { continue };
+        let ext = file_path
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_lowercase();
-        let bytes = match std::fs::read(&item.file_path) {
+        let bytes = match std::fs::read(&file_path) {
             Ok(b) => b,
             Err(_) => continue,
         };
@@ -475,7 +501,7 @@ async fn refresh_thumbnails(items: Vec<RefreshItem>) -> Result<u32, String> {
         } else {
             match image::load_from_memory(&bytes) { Ok(i) => i, Err(_) => continue }
         };
-        if save_thumb(&img, std::path::Path::new(&item.thumb_path)).is_ok() {
+        if save_thumb(&img, &thumb_path).is_ok() {
             count += 1;
         }
     }
@@ -592,6 +618,16 @@ async fn download_model_file(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
 ) -> Result<(), String> {
+    // filename is frontend-supplied — anything but the two known model files is
+    // a path-traversal attempt
+    const MODEL_FILES: &[&str] = &[
+        "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
+        "mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf",
+    ];
+    if !MODEL_FILES.contains(&filename.as_str()) {
+        return Err(format!("unexpected model filename: {filename}"));
+    }
+
     let models_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("models");
     std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
 
@@ -629,16 +665,24 @@ fn sentence_case_result(mut r: AnalysisResult) -> AnalysisResult {
     r
 }
 
+// Locate the llama sidecar. The bundler strips the target-triple suffix when
+// copying externalBin next to the exe, so the bundled app has the bare name in
+// Contents/MacOS. The dev-mode copy is also unsuffixed but lacks its @rpath
+// dylibs (until the static rebuild lands), so dev prefers the self-contained
+// Homebrew binary.
+fn llama_binary() -> std::path::PathBuf {
+    let bundled = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join("llama-mtmd-cli")))
+        .filter(|p| p.exists());
+    match bundled {
+        Some(b) if !cfg!(debug_assertions) => b,
+        _ => std::path::PathBuf::from("/opt/homebrew/bin/llama-mtmd-cli"),
+    }
+}
+
 async fn analyze_local(thumb_path: &str, app: &tauri::AppHandle) -> Result<AnalysisResult, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let dir = exe.parent().ok_or("no exe parent")?;
-    let arch = std::env::consts::ARCH;
-    let binary_name = format!("llama-mtmd-cli-{}-apple-darwin", arch);
-    let binary = dir.join(&binary_name);
-    // In dev mode Tauri copies the sidecar without the arch suffix but without dylibs;
-    // skip it and fall back to the homebrew binary which is self-contained.
-    let binary = if binary.exists() { binary }
-        else { std::path::PathBuf::from("/opt/homebrew/bin/llama-mtmd-cli") };
+    let binary = llama_binary();
 
     let models_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("models");
     let text_model = models_dir.join("Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf");
@@ -754,13 +798,7 @@ async fn analyze_image(thumb_path: String, api_key: String, model: String, app: 
 }
 
 async fn generate_prompt_local(thumb_path: &str, app: &tauri::AppHandle) -> Result<String, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let dir = exe.parent().ok_or("no exe parent")?;
-    let arch = std::env::consts::ARCH;
-    let binary_name = format!("llama-mtmd-cli-{}-apple-darwin", arch);
-    let binary = dir.join(&binary_name);
-    let binary = if binary.exists() { binary }
-        else { std::path::PathBuf::from("/opt/homebrew/bin/llama-mtmd-cli") };
+    let binary = llama_binary();
 
     let models_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("models");
     let text_model = models_dir.join("Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf");
@@ -868,8 +906,10 @@ fn analyze_vision_item(thumb_path: String) -> VisionAnalysis {
 }
 
 #[tauri::command]
-fn export_original(file_path: String, dest_path: String) -> Result<(), String> {
-    std::fs::copy(&file_path, &dest_path)
+fn export_original(app: tauri::AppHandle, file_path: String, dest_path: String) -> Result<(), String> {
+    // source must be ours; dest is a user-chosen location from the save dialog
+    let src = ensure_in_app_data(&app, &file_path)?;
+    std::fs::copy(&src, &dest_path)
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
@@ -897,8 +937,9 @@ fn copy_image_bytes_to_clipboard(png_base64: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn copy_image_to_clipboard(file_path: String) -> Result<(), String> {
-    let path = std::path::Path::new(&file_path);
+fn copy_image_to_clipboard(app: tauri::AppHandle, file_path: String) -> Result<(), String> {
+    let path = ensure_in_app_data(&app, &file_path)?;
+    let file_path = path.to_string_lossy().to_string();
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
 
     let img = match ext.as_str() {
@@ -1329,19 +1370,23 @@ fn mark_clipboard_own_copy() {
 }
 
 #[tauri::command]
-fn trash_files(file_path: String, thumb_path: String) -> Result<(), String> {
+fn trash_files(app: tauri::AppHandle, file_path: String, thumb_path: String) -> Result<(), String> {
     // trash the main file
-    trash::delete(&file_path).map_err(|e| e.to_string())?;
+    let file = ensure_in_app_data(&app, &file_path)?;
+    trash::delete(&file).map_err(|e| e.to_string())?;
     // only trash thumb if it's a different file (GIF/SVG use file_path == thumb_path)
     if thumb_path != file_path {
-        let _ = trash::delete(&thumb_path);
+        if let Ok(thumb) = ensure_in_app_data(&app, &thumb_path) {
+            let _ = trash::delete(&thumb);
+        }
     }
     Ok(())
 }
 
 #[tauri::command]
-fn get_file_size(file_path: String) -> Result<u64, String> {
-    std::fs::metadata(&file_path)
+fn get_file_size(app: tauri::AppHandle, file_path: String) -> Result<u64, String> {
+    let path = ensure_in_app_data(&app, &file_path)?;
+    std::fs::metadata(&path)
         .map(|m| m.len())
         .map_err(|e| e.to_string())
 }

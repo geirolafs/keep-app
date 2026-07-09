@@ -22,10 +22,22 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": {
+        "default-src": "'self'",
+        "img-src": "'self' asset: http://asset.localhost blob: data:",
+        "media-src": "'self' asset: http://asset.localhost",
+        "style-src": "'self' 'unsafe-inline'",
+        "font-src": "'self'",
+        "connect-src": "'self' ipc: http://ipc.localhost",
+        "script-src": "'self'"
+      },
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": [
+          "$APPDATA/images/**",
+          "$APPDATA/thumbs/**",
+          "$APPDATA/examples/**"
+        ]
       }
     }
   },
