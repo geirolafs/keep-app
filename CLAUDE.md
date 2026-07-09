@@ -33,9 +33,14 @@ Phase 7 remaining — see PLAN.md:
 - [x] Bin / soft delete — schema migration v5 (`deleted_at`), Bin tab, auto-purge 90d, macOS Trash
 - [x] Local AI — macOS Vision Framework (silent auto-tagging + OCR) + Qwen2.5-VL-3B local LLM (~3.3 GB one-time download)
 - [x] Social URL cards — paste tweet/URL → og: scrape → `<PostCard>` in lightbox
-- [ ] AI semantic search — `sqlite-vec` embeddings, hybrid keyword + cosine
+- [ ] AI semantic search — `sqlite-vec` embeddings, hybrid keyword + cosine (deferred)
 
-Phase 8 — Browser Extension + Social Posts (see PLAN.md)
+**Phase 8 — Browser Extension (in progress).** No native messaging / no HTTP server — two simple transports:
+- [x] **Downloads-folder bridge** — `extension/` (vanilla MV3, no build step) saves via `chrome.downloads` into `~/Downloads/KEEP/` with `.keep.json` metadata sidecars; `src-tauri/src/inbox.rs` polls (2s), ingests, deletes on JS ack (`inbox_ack`); folder = offline queue; startup drain
+- [x] **Clipboard capture mode** — `src-tauri/src/clipboard_watch.rs` polls `NSPasteboard.changeCount` (objc2); copied images/URLs auto-save; Settings toggle + pulsing toolbar indicator; own-copy guard on the 3 copy cmds
+- [x] Shared ingest: Rust emits `external-save` → `use-images.ts` listener inserts via `insertSavedImage`/`insertSavedLink` helpers (also used by paste/drag; INSERT OR IGNORE)
+- [x] Extension: right-click save image/video/link/page, toolbar click + ⌘⇧S save page, screenshots visible + region (OffscreenCanvas crop), badge ✓/! feedback
+- [ ] X bookmark watcher, save-post DOM extraction, full-page screenshot, Firefox (see PLAN.md)
 Phase 9 — Canvas/Spaces — custom SVG infinite canvas, `boards` + `board_items` tables, drag from library onto canvas. GatherOS reference: SVG-rendered, no Fabric.js/Konva, simple x/y/rotation/z_index schema.
 
 ---
@@ -94,6 +99,19 @@ src/
     useCollections.ts       — CollectionsContext: collections list, create, rename, delete, add/remove image, reorder, getCollectionThumbs
     use-settings.ts         — getSetting/setSetting via SQLite settings table
   mocks/                    — Tauri API stubs for `bun run browser` preview mode
+
+extension/                  — KEEP Clipper (vanilla MV3, load-unpacked; no build step)
+  manifest.json             — permissions: contextMenus, downloads, activeTab, scripting; ⌘⇧S command
+  background.js             — context menus, screenshots, downloads into ~/Downloads/KEEP + sidecars
+  region-select.js          — injected drag-rect overlay for region screenshots
+
+src-tauri/src/inbox.rs      — ~/Downloads/KEEP poll loop (2s): gated on frontend-ready (set_frontend_ready
+                              cmd — DB insert lives in JS, so ingest waits for the listener), stability check,
+                              sidecar pairing, ingest via save_from_path/save_link, emit "external-save";
+                              delete only on inbox_ack from JS (un-acked emits replayed each tick,
+                              quarantined after 8 attempts) / quarantine file+sidecar as .failed on error
+src-tauri/src/clipboard_watch.rs — clipboard capture mode: NSPasteboard.changeCount poll (objc2),
+                              image→PNG / URL routing, own-copy guard, set_clipboard_capture cmd
 
 src-tauri/src/lib.rs        — ALL Rust commands:
   save_thumb()              — resize to 600px Lanczos3 JPEG; shared by all save paths

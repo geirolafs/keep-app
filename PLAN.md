@@ -247,16 +247,23 @@ Before adding more features, harden what exists:
 
 ### Phase 8 — Browser Extension + Social Posts
 
-#### Native Messaging Host
-- [ ] Tauri native messaging host — registers with Chrome/Firefox, receives structured messages from extension
-- [ ] Toast/badge notification on successful save
+**Decision (2026-07-08): no native messaging, no HTTP server.** Two simpler transports instead:
+1. **Downloads-folder bridge** — extension saves via `chrome.downloads` into `~/Downloads/KEEP/`; the app polls that folder (2 s, `inbox.rs`) and ingests. Folder doubles as offline queue. Metadata rides in `<name>.keep.json` sidecars. Browser's own network stack fetches media → cookies/referer work for free.
+2. **Clipboard capture mode** — zero-extension path; toggle in Settings. Rust polls `NSPasteboard.changeCount` (`clipboard_watch.rs`), copied images/URLs auto-ingest via the existing pipeline. Self-copy guarded.
 
-#### Chrome Extension (manifest v3)
-- [ ] Extension scaffold — popup, background service worker, content scripts
-- [ ] Right-click → "Save to KEEP" on any image (sends URL/bytes via native messaging)
+Both emit `external-save` → `use-images.ts` listener does the SQLite insert via shared `insertSavedImage`/`insertSavedLink` helpers (same code path as paste/drag).
+
+#### Shipped
+- [x] `inbox.rs` — inbox poll/ingest, sidecar pairing, startup drain, failure quarantine (`.failed` rename, sidecar included); source files deleted only after frontend acks the insert (`inbox_ack`), un-acked emits replayed each tick (quarantine after 8 attempts) — survives webview reloads
+- [x] `clipboard_watch.rs` — changeCount poll via objc2, image/URL routing, own-copy guard; `set_clipboard_capture` cmd; Settings toggle + pulsing toolbar indicator
+- [x] `extension/` — vanilla MV3, no build step (manifest + background.js + region-select.js): right-click save image/video/link/page, toolbar click + ⌘⇧S save page, screenshots (visible + region via OffscreenCanvas crop), badge feedback
+- [x] `insertSavedImage`/`insertSavedLink` refactor + `external-save` listener (INSERT OR IGNORE, id-dedup)
+
+#### Remaining
 - [ ] **X bookmark watcher**: content script on `x.com` — detects bookmarks as they scroll into view, extracts `tweet_meta`, sends to KEEP automatically
 - [ ] **Save post action**: right-click or hover button on post — extracts post data from DOM for X, Instagram, Facebook (best-effort), LinkedIn (best-effort)
-- [ ] Firefox support (manifest v2 compat layer)
+- [ ] Full-page scrolling screenshot (capture throttle + sticky-element artifacts — deferred)
+- [ ] Firefox support
 
 #### Posts Schema (migration v7)
 ```sql
