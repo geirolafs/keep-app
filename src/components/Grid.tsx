@@ -31,7 +31,9 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import type { Ref, RefObject } from "react";
 import {
+	memo,
 	useCallback,
+	useDeferredValue,
 	useEffect,
 	useImperativeHandle,
 	useMemo,
@@ -47,7 +49,7 @@ import { Lightbox } from "@/components/Lightbox";
 import { PrototypePostCard, PrototypeSwitcher } from "@/components/PrototypePostCards";
 import type { Sort, Tab } from "@/components/TopNav";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { type PendingItem, useImages } from "@/hooks/use-images";
+import { type Image, type PendingItem, useImages } from "@/hooks/use-images";
 import { useTags } from "@/hooks/use-tags";
 import { useCollections } from "@/hooks/useCollections";
 import { cn } from "@/lib/utils";
@@ -332,6 +334,171 @@ interface GridProps {
 	ref?: Ref<GridHandle>;
 }
 
+const EMPTY_TAGS: { id: string; name: string }[] = [];
+
+// Cards per memoized chunk. Memoized cards alone still leave React walking
+// every mounted element on each +50 bump (O(loaded) diff — 300–500ms at 18k).
+// Chunking gives unchanged runs a stable array identity so the diff touches
+// only the chunk list + the tail chunk: O(loaded/CHUNK + CHUNK).
+const CHUNK_SIZE = 200;
+
+// Memoized masonry card (ticket #18): the +50 windowing bump appends new cards
+// while existing ones keep identical props and skip reconciliation — per-bump
+// render cost was O(loaded cards), ~3.2s at 20k depth, now O(50). Every prop
+// must be identity-stable across bumps: imgSrc is module-level, tags fall back
+// to EMPTY_TAGS, onCardClick is a stable useCallback.
+interface MasonryCardProps {
+	img: Image;
+	tags: { id: string; name: string }[];
+	selected: boolean;
+	selectionMode: boolean;
+	imgSrc: (path: string) => string;
+	onCardClick: (id: string, modifier: boolean) => void;
+}
+
+const MasonryCard = memo(function MasonryCard({
+	img,
+	tags,
+	selected,
+	selectionMode,
+	imgSrc,
+	onCardClick,
+}: MasonryCardProps) {
+	// PROTOTYPE — wayfinder ticket #3: post/link cards render via variant prototype
+	const isBookmarkCard = img.kind === "post" || img.kind === "link";
+	return (
+		<button
+			type="button"
+			aria-label={img.title ?? "Image"}
+			className={cn(
+				"group overflow-hidden relative outline-none w-full text-left transition-transform duration-[150ms] ease-out active:scale-[0.98] cursor-default select-none",
+				selected && "ring-2 ring-primary ring-offset-2 ring-offset-background",
+			)}
+			onClick={(e) => {
+				const modifier = e.metaKey || e.shiftKey;
+				if (modifier) e.preventDefault();
+				onCardClick(img.id, modifier);
+			}}
+		>
+			{isBookmarkCard ? (
+				<PrototypePostCard image={img} imgSrc={imgSrc} />
+			) : (
+				<>
+					<div className="motion-safe:transition-transform motion-safe:duration-[200ms] motion-safe:ease-out motion-safe:group-hover:scale-[1.01]">
+						{img.kind === "video" ? (
+							<video
+								src={imgSrc(img.file_path)}
+								autoPlay
+								muted
+								loop
+								playsInline
+								className="block w-full object-cover"
+								draggable={false}
+								onLoadedData={(e) => {
+									e.currentTarget.playbackRate = 0.25;
+								}}
+								onMouseEnter={(e) => {
+									e.currentTarget.playbackRate = 1;
+								}}
+								onMouseLeave={(e) => {
+									e.currentTarget.playbackRate = 0.25;
+								}}
+							/>
+						) : (
+							<LazyImage
+								src={imgSrc(img.thumb_path)}
+								placeholder={
+									img.file_path.toLowerCase().endsWith(".svg")
+										? "#fff"
+										: (img.dominant_color ??
+											(img.kind === "link" ? "#1a1a1a" : undefined))
+								}
+								thumbHash={img.thumb_hash ?? undefined}
+								width={img.width}
+								height={img.height}
+								className="block w-full"
+								draggable={false}
+							/>
+						)}
+					</div>
+					<div className="absolute bottom-0 left-0 right-0 flex flex-wrap gap-1 pt-16 px-2 pb-2 bg-gradient-to-t from-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-[120ms] ease-out">
+						{tags.slice(0, 3).map((t) => (
+							<span
+								key={t.id}
+								className="rounded-full bg-white/80 px-1.5 py-0.5 text-[10px] text-black font-medium"
+							>
+								{t.name}
+							</span>
+						))}
+					</div>
+				</>
+			)}
+			{selectionMode && (
+				<div
+					className={cn(
+						"absolute top-2 left-2 size-5 rounded-full border-2 flex items-center justify-center text-xs font-bold transition-colors",
+						selected
+							? "border-primary bg-primary text-primary-foreground"
+							: "border-white/60 bg-black/30",
+					)}
+				>
+					{selected && "✓"}
+				</div>
+			)}
+		</button>
+	);
+});
+
+// A run of cards with stable array identity across bumps — memo makes React
+// skip the whole run when nothing in it changed.
+interface MasonryChunkProps {
+	items: (PendingItem | Image)[];
+	getTags: (id: string) => { id: string; name: string }[];
+	selectedIds: Set<string>;
+	selectionMode: boolean;
+	imgSrc: (path: string) => string;
+	onCardClick: (id: string, modifier: boolean) => void;
+}
+
+const MasonryChunk = memo(function MasonryChunk({
+	items,
+	getTags,
+	selectedIds,
+	selectionMode,
+	imgSrc,
+	onCardClick,
+}: MasonryChunkProps) {
+	return (
+		<>
+			{items.map((item) =>
+				"file_path" in item ? (
+					<MasonryCard
+						key={item.id}
+						img={item}
+						tags={getTags(item.id)}
+						selected={selectedIds.has(item.id)}
+						selectionMode={selectionMode}
+						imgSrc={imgSrc}
+						onCardClick={onCardClick}
+					/>
+				) : (
+					<div
+						key={item.id}
+						className="relative overflow-hidden rounded-sm bg-muted motion-safe:animate-pulse w-full aspect-square"
+					>
+						<div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-3">
+							<RiLoader4Line className="size-5 text-muted-foreground motion-safe:animate-spin" />
+							<span className="text-xs text-muted-foreground text-center line-clamp-2 leading-tight">
+								{item.label}
+							</span>
+						</div>
+					</div>
+				),
+			)}
+		</>
+	);
+});
+
 export default function Grid({
 	activeTab = "all",
 	sort = "newest",
@@ -475,6 +642,11 @@ export default function Grid({
 		}
 	}, [shuffleSeed, allImages]); // eslint-disable-line react-hooks/exhaustive-deps
 
+	// Deferred so a keystroke never pays the grid teardown synchronously — at
+	// deep scroll the reset to visibleCount=50 tears down thousands of cards
+	// (866ms measured at 20k); deferring keeps the input responsive (ticket #18).
+	const deferredQuery = useDeferredValue(searchQuery);
+
 	// Compute filtered + sorted images
 	const filteredImages = (() => {
 		let imgs = [...allImages];
@@ -492,8 +664,8 @@ export default function Grid({
 			});
 		}
 
-		if (searchQuery) {
-			const q = searchQuery.toLowerCase();
+		if (deferredQuery) {
+			const q = deferredQuery.toLowerCase();
 			imgs = imgs.filter(
 				(img) =>
 					img.title?.toLowerCase().includes(q) ||
@@ -535,7 +707,7 @@ export default function Grid({
 		: -1;
 
 	// Adjust during render: clear selection + reset pagination when filters/tab change
-	const filterKey = `${activeTab}|${sort}|${searchQuery}|${selectedId ?? ""}`;
+	const filterKey = `${activeTab}|${sort}|${deferredQuery}|${selectedId ?? ""}`;
 	const [prevSync, setPrevSync] = useState({ tab: activeTab, filterKey });
 	if (prevSync.tab !== activeTab) {
 		setPrevSync({ tab: activeTab, filterKey });
@@ -546,19 +718,43 @@ export default function Grid({
 		setVisibleCount(50);
 	}
 
-	// Sentinel: load more DOM nodes as user scrolls
-	useEffect(() => {
+	// Sentinel: window in more cards as the user nears the bottom (ticket #18).
+	// No IntersectionObserver — its edge-triggered events get coalesced away when
+	// a scroll and the resulting +50 append land in the same frame (sentinel goes
+	// out→in→out with no net change), permanently stalling the load. Instead:
+	// a direct geometry check on rAF-throttled scroll events, plus a post-bump
+	// chain so short content keeps filling without any scrolling.
+	const filteredLenRef = useRef(0);
+	filteredLenRef.current = filteredImages.length;
+	const trySentinelBump = useCallback((root: HTMLElement) => {
 		const el = sentinelRef.current;
-		if (!el || visibleCount >= filteredImages.length) return;
-		const observer = new IntersectionObserver(
-			([entry]) => {
-				if (entry.isIntersecting) setVisibleCount((n) => n + 50);
-			},
-			{ root: masonryEl ?? null, rootMargin: "600px" },
-		);
-		observer.observe(el);
-		return () => observer.disconnect();
-	}, [visibleCount, filteredImages.length, masonryEl]);
+		if (!el) return;
+		if (el.getBoundingClientRect().top <= root.getBoundingClientRect().bottom + 600) {
+			setVisibleCount((n) => (n < filteredLenRef.current ? n + 50 : n));
+		}
+	}, []);
+	useEffect(() => {
+		const root = masonryEl;
+		if (!root) return;
+		let ticking = false;
+		const onScroll = () => {
+			if (ticking) return;
+			ticking = true;
+			requestAnimationFrame(() => {
+				ticking = false;
+				trySentinelBump(root);
+			});
+		};
+		root.addEventListener("scroll", onScroll, { passive: true });
+		return () => root.removeEventListener("scroll", onScroll);
+	}, [masonryEl, trySentinelBump]);
+	useEffect(() => {
+		const root = masonryEl;
+		if (!root || visibleCount >= filteredImages.length) return;
+		// rAF so the next bump lands after this one paints — chain, don't block
+		const raf = requestAnimationFrame(() => trySentinelBump(root));
+		return () => cancelAnimationFrame(raf);
+	}, [visibleCount, filteredImages.length, masonryEl, trySentinelBump]);
 
 	// Tauri drag-drop listener
 	useEffect(() => {
@@ -646,9 +842,25 @@ export default function Grid({
 		}
 	};
 
-	const toggleSelect = (id: string) => {
-		dispatch({ type: "toggleSelect", id });
-	};
+	// Stable identity for MasonryCard's memo — selection state read via ref.
+	const selectionActiveRef = useRef(false);
+	selectionActiveRef.current = selectedIds.size > 0;
+	const onCardClick = useCallback((id: string, modifier: boolean) => {
+		if (modifier) {
+			dispatch({ type: "toggleSelect", id });
+		} else if (selectionActiveRef.current) {
+			dispatch({ type: "openAndClearSelection", id });
+		} else {
+			dispatch({ type: "setOpenId", id });
+		}
+	}, []);
+	const getTags = useCallback(
+		(id: string) => imageTagsMap.get(id) ?? EMPTY_TAGS,
+		[imageTagsMap],
+	);
+	// Chunk identity cache — a chunk whose contents are unchanged keeps its
+	// previous array reference so MasonryChunk's memo can skip it.
+	const chunkCacheRef = useRef(new Map<string, (PendingItem | Image)[]>());
 
 	const handleBatchDelete = useCallback(() => {
 		if (selectedIds.size === 0) return;
@@ -1058,114 +1270,25 @@ export default function Grid({
 		);
 		allDisplayItems.forEach((item, i) => cols[i % numCols].push(item));
 
-		const renderCard = (item: PendingItem | (typeof visibleImages)[0]) => {
-			if (!("file_path" in item)) {
-				return (
-					<div
-						key={item.id}
-						className="relative overflow-hidden rounded-sm bg-muted motion-safe:animate-pulse w-full aspect-square"
-					>
-						<div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-3">
-							<RiLoader4Line className="size-5 text-muted-foreground motion-safe:animate-spin" />
-							<span className="text-xs text-muted-foreground text-center line-clamp-2 leading-tight">
-								{item.label}
-							</span>
-						</div>
-					</div>
-				);
+		// Split each column into fixed-size chunks, reusing the previous array
+		// reference when a chunk's contents are identical — on a +50 bump only
+		// the tail chunk changes, so React's diff is O(chunks + tail).
+		const chunksFor = (col: typeof allDisplayItems, colIdx: number) => {
+			const out: (typeof allDisplayItems)[] = [];
+			for (let i = 0; i < col.length; i += CHUNK_SIZE) {
+				const slice = col.slice(i, i + CHUNK_SIZE);
+				const key = `${colIdx}:${i}`;
+				const prev = chunkCacheRef.current.get(key);
+				if (prev && prev.length === slice.length && prev.every((v, j) => v === slice[j])) {
+					out.push(prev);
+				} else {
+					chunkCacheRef.current.set(key, slice);
+					out.push(slice);
+				}
 			}
-			const img = item;
-			// PROTOTYPE — wayfinder ticket #3: post/link cards render via variant prototype
-			const isBookmarkCard = img.kind === "post" || img.kind === "link";
-			return (
-				<button
-					type="button"
-					key={img.id}
-					aria-label={img.title ?? "Image"}
-					className={cn(
-						"group overflow-hidden relative outline-none w-full text-left transition-transform duration-[150ms] ease-out active:scale-[0.98] cursor-default select-none",
-						selectedIds.has(img.id) &&
-							"ring-2 ring-primary ring-offset-2 ring-offset-background",
-					)}
-					onClick={(e) => {
-						if (e.metaKey || e.shiftKey) {
-							e.preventDefault();
-							toggleSelect(img.id);
-						} else {
-							if (selectedIds.size > 0)
-								dispatch({ type: "openAndClearSelection", id: img.id });
-							else dispatch({ type: "setOpenId", id: img.id });
-						}
-					}}
-				>
-					{isBookmarkCard ? (
-						<PrototypePostCard image={img} imgSrc={imgSrc} />
-					) : (
-					<>
-					<div className="motion-safe:transition-transform motion-safe:duration-[200ms] motion-safe:ease-out motion-safe:group-hover:scale-[1.01]">
-						{img.kind === "video" ? (
-							<video
-								src={imgSrc(img.file_path)}
-								autoPlay
-								muted
-								loop
-								playsInline
-								className="block w-full object-cover"
-								draggable={false}
-								onLoadedData={(e) => {
-									e.currentTarget.playbackRate = 0.25;
-								}}
-								onMouseEnter={(e) => {
-									e.currentTarget.playbackRate = 1;
-								}}
-								onMouseLeave={(e) => {
-									e.currentTarget.playbackRate = 0.25;
-								}}
-							/>
-						) : (
-							<LazyImage
-								src={imgSrc(img.thumb_path)}
-								placeholder={
-									img.file_path.toLowerCase().endsWith(".svg")
-										? "#fff"
-										: (img.dominant_color ??
-											(img.kind === "link" ? "#1a1a1a" : undefined))
-								}
-								thumbHash={img.thumb_hash ?? undefined}
-								width={img.width}
-								height={img.height}
-								className="block w-full"
-								draggable={false}
-							/>
-						)}
-					</div>
-					<div className="absolute bottom-0 left-0 right-0 flex flex-wrap gap-1 pt-16 px-2 pb-2 bg-gradient-to-t from-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-[120ms] ease-out">
-						{(imageTagsMap.get(img.id) ?? []).slice(0, 3).map((t) => (
-							<span
-								key={t.id}
-								className="rounded-full bg-white/80 px-1.5 py-0.5 text-[10px] text-black font-medium"
-							>
-								{t.name}
-							</span>
-						))}
-					</div>
-					</>
-					)}
-					{selectedIds.size > 0 && (
-						<div
-							className={cn(
-								"absolute top-2 left-2 size-5 rounded-full border-2 flex items-center justify-center text-xs font-bold transition-colors",
-								selectedIds.has(img.id)
-									? "border-primary bg-primary text-primary-foreground"
-									: "border-white/60 bg-black/30",
-							)}
-						>
-							{selectedIds.has(img.id) && "✓"}
-						</div>
-					)}
-				</button>
-			);
+			return out;
 		};
+		const selectionMode = selectedIds.size > 0;
 
 		return (
 			<div key={`masonry-${activeTab}`} ref={(el) => { setMasonryEl(el); activeScrollRef.current = el; setActiveScrollEl(el); }} className="flex-1 overflow-y-auto px-4 pb-4" style={{ paddingTop: navHeight + 16 }}>
@@ -1173,7 +1296,17 @@ export default function Grid({
 					<div className="flex gap-1 items-start">
 						{cols.map((col, colIdx) => (
 							<div key={colIdx} className="flex flex-1 flex-col gap-1 min-w-0">
-								{col.map(renderCard)}
+								{chunksFor(col, colIdx).map((chunk, chunkIdx) => (
+									<MasonryChunk
+										key={chunkIdx}
+										items={chunk}
+										getTags={getTags}
+										selectedIds={selectedIds}
+										selectionMode={selectionMode}
+										imgSrc={imgSrc}
+										onCardClick={onCardClick}
+									/>
+								))}
 							</div>
 						))}
 					</div>

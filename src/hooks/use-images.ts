@@ -703,14 +703,18 @@ function useImagesState() {
     resetAll,
     saveExample,
     loadExample,
-    imgSrc: (path: string) => {
-      if (path.startsWith("http://") || path.startsWith("https://")) {
-        console.error("[keep] imgSrc received a raw http URL — file_path must be a local path:", path);
-        return path;
-      }
-      return convertFileSrc(path);
-    },
+    imgSrc,
   };
+}
+
+// Module-level so its identity is stable across provider renders — memoized
+// grid cards receive it as a prop and must not re-render on every render.
+export function imgSrc(path: string): string {
+  if (path.startsWith("http://") || path.startsWith("https://")) {
+    console.error("[keep] imgSrc received a raw http URL — file_path must be a local path:", path);
+    return path;
+  }
+  return convertFileSrc(path);
 }
 
 type ImagesState = ReturnType<typeof useImagesState>;
