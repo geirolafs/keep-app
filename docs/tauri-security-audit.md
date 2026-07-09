@@ -112,7 +112,7 @@ fn ensure_in_app_data(app: &AppHandle, p: &Path) -> Result<PathBuf, String> {
 **Finding.** The `default` capability grants `sql:allow-execute`, `sql:allow-select`, **and `sql:allow-load`**. The webview can run any SQL and even **load arbitrary SQLite files** (`sql:allow-load`). Our own JS uses only parameterized queries (good — no injection today), but the *capability* is far broader than our usage: an XSS gets full DB read/write/schema access, and `allow-load` lets it attach any file as a database.
 
 **Fix.**
-- **Drop `sql:allow-load`** unless something needs it at runtime (nothing in the current code loads a DB by path after init — the connection string is fixed). This is a clear over-grant.
+- ~~**Drop `sql:allow-load`**~~ **Correction (2026-07-09, implementation pass):** `allow-load` cannot be dropped — the JS `Database.load("sqlite:keep.db")` call in `getDb()` invokes the plugin's `load` command on every connection, so removing the permission breaks the app. The connection *string* is fixed in our code, but the capability gates the command itself. Narrowing would require a custom permission scoping `load` to the one connection string — noted under the longer-term item below.
 - Longer term, consider moving mutations behind typed Rust commands and narrowing the plugin scope, so the webview can't issue raw SQL at all. Lower priority than the path/CSP items but worth noting for the "reduce IPC surface" theme.
 
 ---
