@@ -452,3 +452,4 @@ only the native bridge changes. Don't optimize for mobile now.
 2. ~~macOS-only or also Windows?~~ **macOS only**
 3. ~~Cloud sync later, or stay local-forever?~~ **Local-first, sync optional later** — `synced_at` already in schema
 4. ~~Paste image from clipboard — Phase 2 or Phase 1?~~ **Phase 1**
+5. ~~Lazy loading strategy — virtual scroll for very large libraries?~~ **No virtual scroll for v1** (keep-app#8, measured at 20k in #7) — IO windowing kept; stalls were windowing-in cost (unmemoized cards), not architecture. Remediation + gate: keep-app#18; async vision: keep-app#19. Escalation if gate fails: absolute-position masonry from stored width/height.

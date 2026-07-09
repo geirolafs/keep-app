@@ -167,5 +167,5 @@ Same Univers has `sTypoLineGap: 324` (32.4% of em) which bloats the line box and
 3. ~~Cloud sync later, or local-forever?~~ **Local-first, sync optional later** — `synced_at` already in schema
 4. ~~Clipboard paste — Phase 2 or Phase 1?~~ **Phase 1**
 5. ~~Image notes — needs schema migration~~ **Done** — migration v2 adds `notes TEXT`
-6. Lazy loading strategy — virtual scroll still unresolved for very large libraries
+6. ~~Lazy loading strategy — virtual scroll for very large libraries?~~ **No virtual scroll for v1** (keep-app#8) — IO windowing kept; remediation + measured gate = keep-app#18, async vision = keep-app#19
 7. Same Univers font metrics — needs `ascent-override` hack or font fix from type designer
