@@ -1,5 +1,10 @@
 # KEEP
 
+> [!IMPORTANT]
+> **KEEP is archived.** I stopped working on it and started contributing to [Pond](https://github.com/raphaelsalaja/pond) instead. Pond does what KEEP set out to do, does more of it, and is further along. I use it every day. If you landed here looking for a local-first place to keep visual inspiration, go there.
+>
+> The code stays up for reference. No more releases or fixes.
+
 > A desktop app for keeping images you'll definitely use someday.
 
 KEEP is a local-first macOS app for saving, organizing, and browsing visual inspiration. Without the algorithm deciding what you want to see.
